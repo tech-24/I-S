@@ -135,7 +135,7 @@ const state = {
   authError: "",
   authLoading: false,
   forgotMode: false,
-  checkout: { customerId: "", payment: "cash", discount: 0, status: "paid" },
+  checkout: { customerId: "", payment: "cash", discount: 0, status: "paid", quickName: "", quickWa: "", manDesc: "", manPrice: "" },
   checkoutLoading: false,
   editItem: null,
   lastInvoice: null,
@@ -398,18 +398,21 @@ function cartSubtotal(){ return state.cart.reduce((s,i)=>s+i.line_total,0); }
 async function confirmInvoice(){
   if(state.checkoutLoading) return;
   if(state.cart.length===0){ showToast("السلة فارغة، يرجى إضافة صنف أو بند يدوي أولاً"); return; }
+
+  // نقرأ بيانات العميل الجديد (لو موجودة) من الحالة الداخلية (تبقى محفوظة رغم إعادة الرسم)
+  const qName = (state.checkout.quickName||'').trim();
+  const qWa = (state.checkout.quickWa||'').trim();
+
   state.checkoutLoading = true; render();
 
   try{
-    if(!state.checkout.customerId){
-      const qName = document.getElementById('quick-cu-name')?.value.trim();
-      const qWa = document.getElementById('quick-cu-wa')?.value.trim();
-      if(qName){
-        const { data: newCu, error: cuErr } = await sb.from('customers').insert({ name: qName, whatsapp: qWa||null, phone: qWa||null, user_id: state.user.id }).select().single();
-        if(!cuErr && newCu){
-          state.customers = [newCu, ...state.customers];
-          state.checkout.customerId = newCu.id;
-        }
+    if(!state.checkout.customerId && qName){
+      const { data: newCu, error: cuErr } = await sb.from('customers').insert({ name: qName, whatsapp: qWa||null, phone: qWa||null, user_id: state.user.id }).select().single();
+      if(!cuErr && newCu){
+        state.customers = [newCu, ...state.customers];
+        state.checkout.customerId = newCu.id;
+      } else if(cuErr){
+        showToast("تعذّر حفظ بيانات العميل الجديد: "+cuErr.message);
       }
     }
 
@@ -442,7 +445,7 @@ async function confirmInvoice(){
     state.lastInvoice = { ...inv, items, customer: customer||null };
     state.invoices = [{...inv, customers: customer?{name:customer.name}:null}, ...state.invoices];
     state.cart = [];
-    state.checkout = { customerId:"", payment:"cash", discount:0, status:"paid" };
+    state.checkout = { customerId:"", payment:"cash", discount:0, status:"paid", quickName:"", quickWa:"", manDesc:"", manPrice:"" };
     state.modal = null;
     state.viewingHistorical = false;
     state.view = "invoice_view";
@@ -636,11 +639,15 @@ async function shareWhatsapp(){
   const companyName = c?.name || '';
   const text = `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number}.\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number}.`;
 
+  // نفتح نافذة فارغة فوراً (بنفس لحظة الضغطة) عشان المتصفح ما يحجبها لاحقاً كنافذة منبثقة
+  const waWindow = window.open('', '_blank');
+
   showToast("جارٍ تجهيز الفاتورة...");
   let blob;
   try{
     blob = await generatePdfBlob();
   }catch(err){
+    if(waWindow) waWindow.close();
     showToast(err.message || "تعذّر تجهيز ملف الفاتورة، حاول مرة أخرى");
     return;
   }
@@ -658,13 +665,15 @@ async function shareWhatsapp(){
   if(phone){
     const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
     showToast("تم تحميل الفاتورة، يرجى فتح واتساب وإرفاقها بالمحادثة");
-    setTimeout(()=>window.open(waUrl, '_blank'), 700);
+    if(waWindow) waWindow.location.href = waUrl; else window.open(waUrl, '_blank');
   } else if(navigator.canShare && navigator.canShare({ files:[file] })){
+    if(waWindow) waWindow.close();
     try{ await navigator.share({ files:[file], text, title:`فاتورة ${inv.invoice_number}` }); return; }
     catch(e){}
   } else {
     showToast("لا يوجد رقم مسجل لهذا العميل، تم تحميل الفاتورة، يرجى فتح واتساب واختيار المستلم يدوياً");
-    setTimeout(()=>window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank'), 700);
+    const genericUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    if(waWindow) waWindow.location.href = genericUrl; else window.open(genericUrl, '_blank');
   }
 }
 
@@ -881,16 +890,16 @@ function renderCheckoutModal(){
       <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
         <p style="font-size:12px;color:var(--text-2);margin-bottom:8px;">بيانات عميل جديد (اختياري، تُحفظ تلقائياً)</p>
         <div style="display:flex;gap:8px;">
-          <input id="quick-cu-name" placeholder="اسم العميل" style="flex:1;">
-          <input id="quick-cu-wa" placeholder="جوال / واتساب" style="flex:1;">
+          <input id="quick-cu-name" placeholder="اسم العميل" style="flex:1;" value="${state.checkout.quickName||''}" oninput="state.checkout.quickName=this.value">
+          <input id="quick-cu-wa" placeholder="جوال / واتساب" style="flex:1;" value="${state.checkout.quickWa||''}" oninput="state.checkout.quickWa=this.value">
         </div>
       </div>` : ''}
 
       <div class="field"><label>إضافة بند يدوي</label>
         <div style="display:flex;gap:8px;">
-          <input id="man-desc" placeholder="وصف الصنف" style="flex:2;">
-          <input id="man-price" type="number" placeholder="السعر" style="flex:1;">
-          <button class="btn btn-outline" style="width:44px;padding:0;" onclick="addManualItem(document.getElementById('man-desc').value, document.getElementById('man-price').value); document.getElementById('man-desc').value=''; document.getElementById('man-price').value='';">${ICONS.plus}</button>
+          <input id="man-desc" placeholder="وصف الصنف" style="flex:2;" value="${state.checkout.manDesc||''}" oninput="state.checkout.manDesc=this.value">
+          <input id="man-price" type="number" placeholder="السعر" style="flex:1;" value="${state.checkout.manPrice||''}" oninput="state.checkout.manPrice=this.value">
+          <button class="btn btn-outline" style="width:44px;padding:0;" onclick="addManualItem(state.checkout.manDesc, state.checkout.manPrice); state.checkout.manDesc=''; state.checkout.manPrice='';">${ICONS.plus}</button>
         </div>
       </div>
 
