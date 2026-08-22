@@ -204,6 +204,20 @@ async function loadAllData(){
 }
 
 async function initApp(){
+  // لو الرابط رابط فاتورة مختصر (?i=code)، نحوّل مباشرة لملف الفاتورة الفعلي بدون فتح التطبيق
+  const shortCode = new URLSearchParams(window.location.search).get('i');
+  if(shortCode){
+    document.getElementById('app').innerHTML = `<div style="min-height:100vh;" class="center"><div class="spinner spinner-dark" style="width:28px;height:28px;"></div></div>`;
+    const { data, error } = await sb.from('invoice_links').select('storage_path').eq('code', shortCode).maybeSingle();
+    if(!error && data){
+      const { data: urlData } = sb.storage.from('invoices').getPublicUrl(data.storage_path);
+      window.location.replace(urlData.publicUrl);
+      return;
+    } else {
+      document.getElementById('app').innerHTML = `<div style="min-height:100vh;padding:24px;text-align:center;" class="center"><p>الرابط غير صالح أو منتهي</p></div>`;
+      return;
+    }
+  }
   if(window.location.hash.includes('type=recovery')){
     state.view = "reset_password";
     render();
@@ -637,12 +651,11 @@ async function generatePdfBlob(){
 async function shareWhatsapp(){
   const inv = state.lastInvoice, c = state.company;
   const companyName = c?.name || '';
-  const text = `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number}.\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number}.`;
 
   // نفتح نافذة فارغة فوراً (بنفس لحظة الضغطة) عشان المتصفح ما يحجبها لاحقاً كنافذة منبثقة
   const waWindow = window.open('', '_blank');
 
-  showToast("جارٍ تجهيز الفاتورة...");
+  showToast("جارٍ تجهيز رابط الفاتورة...");
   let blob;
   try{
     blob = await generatePdfBlob();
@@ -651,27 +664,52 @@ async function shareWhatsapp(){
     showToast(err.message || "تعذّر تجهيز ملف الفاتورة، حاول مرة أخرى");
     return;
   }
+
+  // رفع الفاتورة كملف عام، ثم توليد رابط مختصر يشير له (بدل الرابط الطويل المباشر)
+  let invoiceLink = '';
+  try{
+    const path = `${state.user.id}/invoice-${inv.invoice_number}-${Date.now()}.pdf`;
+    const { error: upErr } = await sb.storage.from('invoices').upload(path, blob, { contentType:'application/pdf', upsert:true });
+    if(!upErr){
+      const code = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
+      const { error: linkErr } = await sb.from('invoice_links').insert({ code, storage_path: path, user_id: state.user.id });
+      if(!linkErr){
+        invoiceLink = `${window.location.origin}${window.location.pathname}?i=${code}`;
+      } else {
+        const { data } = sb.storage.from('invoices').getPublicUrl(path);
+        invoiceLink = data.publicUrl;
+      }
+    }
+  }catch(e){}
+
+  const text = invoiceLink
+    ? `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} عبر الرابط التالي:\n${invoiceLink}\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number} via the link below:\n${invoiceLink}`
+    : `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number}.\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number}.`;
+
   const file = new File([blob], `invoice-${inv.invoice_number}.pdf`, { type:'application/pdf' });
 
   let phone = inv.customer?.whatsapp || inv.customer?.phone || '';
   phone = phone.replace(/[^0-9]/g,'');
   if(phone && phone.startsWith('0')) phone = '966'+phone.slice(1);
 
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download=`invoice-${inv.invoice_number}.pdf`;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  if(!invoiceLink){
+    // لو فشل رفع الرابط، ننزّل الملف محلياً كخطة بديلة (يحتاج إرفاق يدوي)
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download=`invoice-${inv.invoice_number}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }
 
   if(phone){
     const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-    showToast("تم تحميل الفاتورة، يرجى فتح واتساب وإرفاقها بالمحادثة");
+    showToast(invoiceLink ? "تم إنشاء رابط الفاتورة وفتح المحادثة" : "تم تحميل الفاتورة، يرجى فتح واتساب وإرفاقها بالمحادثة");
     if(waWindow) waWindow.location.href = waUrl; else window.open(waUrl, '_blank');
-  } else if(navigator.canShare && navigator.canShare({ files:[file] })){
+  } else if(!invoiceLink && navigator.canShare && navigator.canShare({ files:[file] })){
     if(waWindow) waWindow.close();
     try{ await navigator.share({ files:[file], text, title:`فاتورة ${inv.invoice_number}` }); return; }
     catch(e){}
   } else {
-    showToast("لا يوجد رقم مسجل لهذا العميل، تم تحميل الفاتورة، يرجى فتح واتساب واختيار المستلم يدوياً");
+    showToast(invoiceLink ? "لا يوجد رقم مسجل لهذا العميل، تم إنشاء رابط الفاتورة، يرجى اختيار المستلم يدوياً بواتساب" : "لا يوجد رقم مسجل لهذا العميل، تم تحميل الفاتورة، يرجى فتح واتساب واختيار المستلم يدوياً");
     const genericUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
     if(waWindow) waWindow.location.href = genericUrl; else window.open(genericUrl, '_blank');
   }
