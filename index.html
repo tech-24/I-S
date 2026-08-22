@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>نظام الفوترة والمبيعات</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<style>
+:root{
+  --primary:#4F46E5;
+  --primary-dark:#3730A3;
+  --primary-light:#EEF0FF;
+  --bg:#F4F5FA;
+  --card:#FFFFFF;
+  --text:#1F2333;
+  --text-2:#6B7280;
+  --border:#E7E8F0;
+  --success:#16A34A;
+  --success-bg:#DCFCE7;
+  --danger:#DC2626;
+  --danger-bg:#FEE2E2;
+  --warn:#D97706;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  font-family:'Tajawal',sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  direction:rtl;
+  -webkit-font-smoothing:antialiased;
+}
+#app{max-width:520px;margin:0 auto;min-height:100vh;background:var(--bg);position:relative;padding-bottom:76px;}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit;}
+input,select,textarea{font-family:inherit;font-size:14px;width:100%;padding:11px 12px;border:1.5px solid var(--border);border-radius:10px;background:#fff;color:var(--text);}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--primary);}
+label{font-size:12.5px;color:var(--text-2);display:block;margin-bottom:6px;font-weight:500;}
+.field{margin-bottom:14px;}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:13px 18px;border-radius:12px;font-size:14.5px;font-weight:700;transition:.15s;}
+.btn-primary{background:var(--primary);color:#fff;}
+.btn-primary:active{background:var(--primary-dark);}
+.btn-outline{background:#fff;border:1.5px solid var(--border);color:var(--text);}
+.btn-outline:active{background:var(--bg);}
+.btn-block{width:100%;}
+.btn-sm{padding:8px 12px;font-size:13px;border-radius:9px;}
+.card{background:var(--card);border-radius:var(--radius);padding:16px;border:1px solid var(--border);}
+.topbar{position:sticky;top:0;z-index:20;background:var(--bg);padding:16px 18px 10px;display:flex;align-items:center;justify-content:space-between;}
+.topbar h1{font-size:19px;font-weight:700;}
+.page{padding:0 18px 24px;}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:20px;font-size:11.5px;font-weight:700;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.icon{width:20px;height:20px;flex-shrink:0;}
+.icon-sm{width:16px;height:16px;}
+.center{display:flex;align-items:center;justify-content:center;}
+.between{display:flex;align-items:center;justify-content:space-between;}
+.muted{color:var(--text-2);}
+.hidden{display:none !important;}
+.modal-overlay{position:fixed;inset:0;background:rgba(20,20,30,.5);z-index:100;display:flex;align-items:flex-end;justify-content:center;}
+.modal-sheet{background:#fff;width:100%;max-width:520px;border-radius:20px 20px 0 0;padding:20px 18px 28px;max-height:88vh;overflow-y:auto;animation:slideup .2s ease;}
+@keyframes slideup{from{transform:translateY(30px);opacity:0;}to{transform:translateY(0);opacity:1;}}
+.modal-title{font-size:17px;font-weight:700;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;}
+.bottomnav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:520px;background:#fff;border-top:1px solid var(--border);display:flex;padding:8px 6px calc(env(safe-area-inset-bottom) + 8px);z-index:30;}
+.navitem{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 2px;border-radius:10px;color:var(--text-2);font-size:10.5px;font-weight:500;}
+.navitem.active{color:var(--primary);}
+.prod-card{background:#fff;border:1.5px solid var(--border);border-radius:12px;padding:10px;text-align:center;position:relative;}
+.prod-card:active{background:var(--primary-light);border-color:var(--primary);}
+.cart-fab{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);width:calc(100% - 36px);max-width:484px;background:var(--primary);color:#fff;border-radius:14px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;z-index:25;box-shadow:0 8px 20px rgba(79,70,229,.35);}
+.list-row{display:flex;align-items:center;justify-content:space-between;padding:13px 0;border-bottom:1px solid var(--border);}
+.list-row:last-child{border-bottom:none;}
+.avatar{width:38px;height:38px;border-radius:10px;background:var(--primary-light);color:var(--primary);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0;}
+.stat-card{background:var(--card);border-radius:var(--radius);padding:14px;}
+.stat-card .val{font-size:21px;font-weight:700;margin-top:2px;}
+.tabbar{display:flex;background:var(--primary-light);border-radius:11px;padding:4px;margin-bottom:16px;}
+.tab{flex:1;text-align:center;padding:9px;border-radius:8px;font-size:13.5px;font-weight:700;color:var(--primary);}
+.tab.active{background:#fff;}
+.err-text{color:var(--danger);font-size:12.5px;margin-top:5px;}
+.toast{position:fixed;top:16px;left:50%;transform:translateX(-50%);background:#1F2333;color:#fff;padding:11px 20px;border-radius:11px;font-size:13.5px;z-index:200;max-width:90%;text-align:center;}
+.spinner{width:16px;height:16px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite;}
+.spinner-dark{border:2px solid rgba(0,0,0,.15);border-top-color:var(--primary);}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty{text-align:center;padding:50px 20px;color:var(--text-2);}
+.qty-ctrl{display:flex;align-items:center;gap:8px;}
+.qty-btn{width:26px;height:26px;border-radius:7px;background:var(--bg);display:flex;align-items:center;justify-content:center;font-weight:700;}
+.logo-upload{width:76px;height:76px;border-radius:16px;background:var(--primary-light);border:1.5px dashed var(--primary);display:flex;align-items:center;justify-content:center;overflow:hidden;color:var(--primary);}
+.logo-upload img{width:100%;height:100%;object-fit:cover;}
+#print-area{display:none;}
+@media print{
+  body *{visibility:hidden;}
+  #print-area, #print-area *{visibility:visible;}
+  #print-area{display:block;position:absolute;top:0;left:0;width:80mm;padding:2mm;font-size:11px;}
+  #print-area.w58{width:58mm;font-size:9.5px;}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="print-area"></div>
+
+<script>
+/* ============ إعداد Supabase ============ */
+const SUPABASE_URL = "https://kacwmlurtzzoytnrhwrn.supabase.co";
+const SUPABASE_KEY = "sb_publishable_rr393elFVvyZFZReUSXAUw_oLUOggU7";
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: { storage: window.localStorage, persistSession: true, autoRefreshToken: true }
+});
+
+/* ============ الحالة العامة ============ */
+const state = {
+  view: "loading",
+  user: null,
+  company: null,
+  customers: [],
+  products: [],
+  invoices: [],
+  cart: [],
+  modal: null,
+  toastMsg: null,
+  authMode: "login",
+  authError: "",
+  authLoading: false,
+  checkout: { customerId: "", payment: "cash", discount: 0, manualDesc: "", manualPrice: "" },
+  editItem: null,
+  lastInvoice: null,
+  dashboard: null,
+  navMoreOpen: false
+};
+
+function showToast(msg){
+  state.toastMsg = msg;
+  render();
+  setTimeout(()=>{ state.toastMsg = null; render(); }, 2200);
+}
+
+function money(n){
+  return (Math.round((n||0)*100)/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+
+/* ============ الأيقونات (SVG بسيطة) ============ */
+const ICONS = {
+  home:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+  list:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>',
+  chart:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M12 20V4M20 20v-7"/></svg>',
+  more:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>',
+  plus:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>',
+  x:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  cart:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h2l2.4 12.4a2 2 0 002 1.6h8.4a2 2 0 002-1.6L21 8H6"/><circle cx="9" cy="21" r="1"/><circle cx="18" cy="21" r="1"/></svg>',
+  user:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="3.5"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>',
+  box:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
+  settings:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+  logout:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
+  whatsapp:'<svg class="icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 00-8.6 15L2 22l5.2-1.4A10 10 0 1012 2zm0 18a8 8 0 01-4.1-1.1l-.3-.2-3 .8.8-2.9-.2-.3A8 8 0 1112 20zm4.4-5.9c-.2-.1-1.4-.7-1.6-.8-.2-.1-.4-.1-.5.1-.2.2-.6.8-.8 1-.1.2-.3.2-.5.1-1.4-.7-2.3-1.3-3.2-2.9-.2-.4.2-.4.6-1.2.1-.1 0-.3 0-.4L9 8.7c-.2-.4-.4-.4-.5-.4h-.5c-.2 0-.4.1-.6.3-.2.2-.8.8-.8 2 0 1.2.9 2.3 1 2.5.1.2 1.8 2.8 4.4 3.9.6.3 1.1.4 1.5.5.6.2 1.2.2 1.6.1.5-.1 1.4-.6 1.6-1.1.2-.5.2-1 .1-1.1-.1-.1-.2-.2-.4-.3z"/></svg>',
+  print:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9V3h12v6M6 18h12v4H6zM4 9h16v7H4z"/></svg>',
+  edit:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>',
+  trash:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15"/></svg>',
+  check:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>',
+  store:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l1-5h16l1 5M4 9v11h16V9M4 9h16"/></svg>',
+  search:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>',
+  cash:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+  card:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>',
+  bank:'<svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M4 21V10M20 21V10M2 10l10-6 10 6M6 10v11M18 10v11M10 10v11M14 10v11"/></svg>',
+  back:'<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>'
+};
+
+/* ============ تحميل بيانات المستخدم ============ */
+async function loadAllData(){
+  const uid = state.user.id;
+  const [company, customers, products, invoices] = await Promise.all([
+    sb.from('company_settings').select('*').eq('user_id', uid).maybeSingle(),
+    sb.from('customers').select('*').eq('user_id', uid).order('created_at',{ascending:false}),
+    sb.from('products').select('*').eq('user_id', uid).order('created_at',{ascending:false}),
+    sb.from('invoices').select('*, customers(name)').eq('user_id', uid).order('created_at',{ascending:false}).limit(200)
+  ]);
+  state.company = company.data || null;
+  state.customers = customers.data || [];
+  state.products = products.data || [];
+  state.invoices = invoices.data || [];
+}
+
+async function initApp(){
+  const { data:{ session } } = await sb.auth.getSession();
+  if(session && session.user){
+    state.user = session.user;
+    await loadAllData();
+    state.view = state.company ? "pos" : "setup_company";
+  } else {
+    state.view = "auth";
+  }
+  render();
+}
+
+sb.auth.onAuthStateChange((event, session) => {
+  if(event === "SIGNED_OUT"){
+    state.user = null; state.company=null; state.customers=[]; state.products=[]; state.invoices=[];
+    state.view = "auth"; render();
+  }
+});
+
+/* ============ المصادقة ============ */
+async function handleAuthSubmit(email, password){
+  state.authError = ""; state.authLoading = true; render();
+  try{
+    if(state.authMode === "signup"){
+      const { data, error } = await sb.auth.signUp({ email, password });
+      if(error) throw error;
+      if(data.session){
+        state.user = data.user;
+        await loadAllData();
+        state.view = "setup_company";
+      } else {
+        state.authLoading = false;
+        showToast("تم إنشاء الحساب! تحقق من بريدك لتأكيد الحساب ثم سجل دخول");
+        state.authMode = "login";
+        render();
+        return;
+      }
+    } else {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password });
+      if(error) throw error;
+      state.user = data.user;
+      await loadAllData();
+      state.view = state.company ? "pos" : "setup_company";
+    }
+  }catch(e){
+    state.authError = e.message.includes("Invalid login") ? "البريد أو كلمة المرور غير صحيحة" :
+                       e.message.includes("confirm") ? "لازم تأكد بريدك الإلكتروني أولاً (تحقق من الإيميل)" :
+                       e.message;
+  }
+  state.authLoading = false;
+  render();
+}
+
+async function handleLogout(){
+  await sb.auth.signOut();
+}
+
+/* ============ حفظ بيانات المنشأة ============ */
+async function saveCompany(form, logoFile){
+  let logo_url = state.company?.logo_url || null;
+  if(logoFile){
+    const path = `${state.user.id}/logo.png`;
+    const { error: upErr } = await sb.storage.from('logos').upload(path, logoFile, { upsert:true, contentType: logoFile.type });
+    if(!upErr){
+      const { data } = sb.storage.from('logos').getPublicUrl(path);
+      logo_url = data.publicUrl + "?t=" + Date.now();
+    }
+  }
+  const payload = { ...form, logo_url, user_id: state.user.id, updated_at: new Date().toISOString() };
+  let res;
+  if(state.company){
+    res = await sb.from('company_settings').update(payload).eq('id', state.company.id).select().single();
+  } else {
+    res = await sb.from('company_settings').insert(payload).select().single();
+  }
+  if(res.error){ showToast("حصل خطأ: " + res.error.message); return; }
+  state.company = res.data;
+  showToast("تم الحفظ بنجاح");
+  state.view = "pos";
+  render();
+}
+
+/* ============ عملاء ============ */
+async function saveCustomer(form){
+  const payload = { ...form, user_id: state.user.id };
+  let res;
+  if(state.editItem){
+    res = await sb.from('customers').update(payload).eq('id', state.editItem.id).select().single();
+  } else {
+    res = await sb.from('customers').insert(payload).select().single();
+  }
+  if(res.error){ showToast("خطأ: " + res.error.message); return; }
+  if(state.editItem) state.customers = state.customers.map(c=>c.id===res.data.id?res.data:c);
+  else state.customers = [res.data, ...state.customers];
+  state.modal = null; state.editItem = null;
+  showToast("تم حفظ العميل");
+  render();
+}
+async function deleteCustomer(id){
+  await sb.from('customers').delete().eq('id', id);
+  state.customers = state.customers.filter(c=>c.id!==id);
+  render();
+}
+
+/* ============ منتجات ============ */
+async function saveProduct(form){
+  const payload = { ...form, price: parseFloat(form.price)||0, user_id: state.user.id };
+  let res;
+  if(state.editItem){
+    res = await sb.from('products').update(payload).eq('id', state.editItem.id).select().single();
+  } else {
+    res = await sb.from('products').insert(payload).select().single();
+  }
+  if(res.error){ showToast("خطأ: " + res.error.message); return; }
+  if(state.editItem) state.products = state.products.map(p=>p.id===res.data.id?res.data:p);
+  else state.products = [res.data, ...state.products];
+  state.modal = null; state.editItem = null;
+  showToast("تم حفظ المنتج");
+  render();
+}
+async function deleteProduct(id){
+  await sb.from('products').delete().eq('id', id);
+  state.products = state.products.filter(p=>p.id!==id);
+  render();
+}
+
+/* ============ السلة ============ */
+function addProductToCart(product){
+  const existing = state.cart.find(i=>i.product_id===product.id);
+  if(existing){ existing.quantity += 1; existing.line_total = existing.quantity*existing.unit_price; }
+  else state.cart.push({ product_id: product.id, description: product.name, quantity:1, unit_price: product.price, line_total: product.price });
+  render();
+}
+function changeQty(idx, delta){
+  const item = state.cart[idx];
+  item.quantity = Math.max(1, item.quantity + delta);
+  item.line_total = item.quantity * item.unit_price;
+  render();
+}
+function removeCartItem(idx){ state.cart.splice(idx,1); render(); }
+function addManualItem(desc, price){
+  if(!desc || !price || isNaN(parseFloat(price))) return;
+  state.cart.push({ product_id:null, description:desc, quantity:1, unit_price: parseFloat(price), line_total: parseFloat(price) });
+  render();
+}
+function cartSubtotal(){ return state.cart.reduce((s,i)=>s+i.line_total,0); }
+
+/* ============ إنشاء الفاتورة ============ */
+async function confirmInvoice(){
+  if(state.cart.length===0){ showToast("السلة فارغة"); return; }
+  const subtotal = cartSubtotal();
+  const discount = parseFloat(state.checkout.discount)||0;
+  const taxable = Math.max(0, subtotal - discount);
+  const tax = Math.round(taxable*0.15*100)/100;
+  const total = Math.round((taxable+tax)*100)/100;
+
+  const { data: numData, error: numErr } = await sb.rpc('generate_invoice_number', { p_user_id: state.user.id });
+  if(numErr){ showToast("خطأ بترقيم الفاتورة: "+numErr.message); return; }
+
+  const invoicePayload = {
+    user_id: state.user.id,
+    invoice_number: numData,
+    customer_id: state.checkout.customerId || null,
+    subtotal, discount, tax, total,
+    status: 'paid',
+    payment_method: state.checkout.payment,
+  };
+  const { data: inv, error: invErr } = await sb.from('invoices').insert(invoicePayload).select().single();
+  if(invErr){ showToast("خطأ: "+invErr.message); return; }
+
+  const items = state.cart.map(i=>({
+    invoice_id: inv.id, product_id: i.product_id, description: i.description,
+    quantity: i.quantity, unit_price: i.unit_price, line_total: i.line_total
+  }));
+  await sb.from('invoice_items').insert(items);
+
+  const customer = state.customers.find(c=>c.id===state.checkout.customerId);
+  state.lastInvoice = { ...inv, items, customer: customer||null };
+  state.invoices = [{...inv, customers: customer?{name:customer.name}:null}, ...state.invoices];
+  state.cart = [];
+  state.checkout = { customerId:"", payment:"cash", discount:0, manualDesc:"", manualPrice:"" };
+  state.modal = null;
+  state.view = "invoice_view";
+  render();
+}
+
+/* ============ عرض فاتورة سابقة ============ */
+async function openInvoice(invoiceId){
+  const { data: inv } = await sb.from('invoices').select('*, customers(*)').eq('id', invoiceId).single();
+  const { data: items } = await sb.from('invoice_items').select('*').eq('invoice_id', invoiceId);
+  state.lastInvoice = { ...inv, items, customer: inv.customers };
+  state.view = "invoice_view";
+  render();
+}
+
+/* ============ طباعة ============ */
+function printInvoice(width){
+  const inv = state.lastInvoice;
+  const c = state.company;
+  const area = document.getElementById('print-area');
+  area.className = width==='58'?'w58':'';
+  area.innerHTML = `
+    <div style="text-align:center;margin-bottom:6px;">
+      <div style="font-weight:900;font-size:1.15em;">${c?.name||''}</div>
+      <div>${c?.address||''}</div>
+      <div>${c?.phone||''}</div>
+      <div>ر.ض: ${c?.tax_number||'-'}</div>
+    </div>
+    <div style="border-top:1px dashed #000;border-bottom:1px dashed #000;padding:4px 0;margin:4px 0;">
+      <div>فاتورة ضريبية #${inv.invoice_number}</div>
+      <div>${new Date(inv.created_at).toLocaleString('ar-SA')}</div>
+      <div>العميل: ${inv.customer?.name || 'عميل نقدي'}</div>
+      <div>الدفع: ${inv.payment_method==='cash'?'نقدي':inv.payment_method==='card'?'شبكة':'تحويل'}</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr><td>الصنف</td><td>كمية</td><td>الإجمالي</td></tr></thead>
+      <tbody>
+      ${inv.items.map(i=>`<tr><td>${i.description}</td><td>${i.quantity}</td><td>${money(i.line_total)}</td></tr>`).join('')}
+      </tbody>
+    </table>
+    <div style="border-top:1px dashed #000;margin-top:4px;padding-top:4px;">
+      <div style="display:flex;justify-content:space-between;"><span>المجموع الفرعي</span><span>${money(inv.subtotal)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>الخصم</span><span>${money(inv.discount)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span>ضريبة 15%</span><span>${money(inv.tax)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-weight:900;font-size:1.1em;"><span>الإجمالي</span><span>${money(inv.total)} ر.س</span></div>
+    </div>
+    <div style="text-align:center;margin-top:8px;">شكراً لتعاملكم معنا</div>
+  `;
+  window.print();
+}
+
+/* ============ توليد PDF ============ */
+function generatePdfBlob(){
+  const inv = state.lastInvoice;
+  const c = state.company;
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format:[80, 150 + inv.items.length*6] });
+  doc.setFont('helvetica','bold'); doc.setFontSize(11);
+  let y = 8;
+  doc.text(c?.name||'', 40, y, {align:'center'}); y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.text(c?.address||'', 40, y, {align:'center'}); y+=4;
+  doc.text(c?.phone||'', 40, y, {align:'center'}); y+=6;
+  doc.text(`Invoice #${inv.invoice_number}`, 40, y, {align:'center'}); y+=4;
+  doc.text(new Date(inv.created_at).toLocaleDateString(), 40, y, {align:'center'}); y+=4;
+  doc.text(`Customer: ${inv.customer?.name || 'Walk-in'}`, 40, y, {align:'center'}); y+=6;
+  doc.setDrawColor(150); doc.line(4,y,76,y); y+=5;
+  inv.items.forEach(i=>{
+    doc.text(`${i.description} x${i.quantity}`, 4, y);
+    doc.text(money(i.line_total), 76, y, {align:'right'});
+    y+=5;
+  });
+  doc.line(4,y,76,y); y+=5;
+  doc.text('Subtotal', 4, y); doc.text(money(inv.subtotal), 76, y, {align:'right'}); y+=5;
+  doc.text('Discount', 4, y); doc.text(money(inv.discount), 76, y, {align:'right'}); y+=5;
+  doc.text('VAT 15%', 4, y); doc.text(money(inv.tax), 76, y, {align:'right'}); y+=5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(10);
+  doc.text('Total', 4, y); doc.text(money(inv.total)+' SAR', 76, y, {align:'right'});
+  return doc.output('blob');
+}
+
+/* ============ مشاركة واتساب ============ */
+async function shareWhatsapp(){
+  const inv = state.lastInvoice;
+  const c = state.company;
+  const companyName = c?.name || '';
+  const text = `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number}.\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number}.`;
+  const blob = generatePdfBlob();
+  const file = new File([blob], `invoice-${inv.invoice_number}.pdf`, { type:'application/pdf' });
+
+  if(navigator.canShare && navigator.canShare({ files:[file] })){
+    try{
+      await navigator.share({ files:[file], text, title:`فاتورة ${inv.invoice_number}` });
+      return;
+    }catch(e){ /* user cancelled or failed, fall through */ }
+  }
+  // fallback: download PDF then open whatsapp chat with text
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=`invoice-${inv.invoice_number}.pdf`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 3000);
+
+  let phone = inv.customer?.whatsapp || inv.customer?.phone || '';
+  phone = phone.replace(/[^0-9]/g,'');
+  if(phone && phone.startsWith('0')) phone = '966'+phone.slice(1);
+  const waUrl = phone
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+  showToast("جاري تحميل الفاتورة، افتح واتساب وأرفقها");
+  setTimeout(()=>window.open(waUrl, '_blank'), 800);
+}
+
+/* ============ لوحة التحكم ============ */
+function computeDashboard(){
+  const today = new Date().toISOString().slice(0,10);
+  const invoicesToday = state.invoices.filter(i=>i.created_at.slice(0,10)===today);
+  const salesToday = invoicesToday.reduce((s,i)=>s+parseFloat(i.total),0);
+  const thisMonth = new Date().toISOString().slice(0,7);
+  const invoicesMonth = state.invoices.filter(i=>i.created_at.slice(0,7)===thisMonth);
+  const salesMonth = invoicesMonth.reduce((s,i)=>s+parseFloat(i.total),0);
+
+  const days = [...Array(7)].map((_,idx)=>{
+    const d = new Date(); d.setDate(d.getDate()-(6-idx));
+    return d.toISOString().slice(0,10);
+  });
+  const dailyTotals = days.map(day => state.invoices.filter(i=>i.created_at.slice(0,10)===day).reduce((s,i)=>s+parseFloat(i.total),0));
+
+  return { salesToday, countToday: invoicesToday.length, salesMonth, countMonth: invoicesMonth.length, days, dailyTotals, customersCount: state.customers.length };
+}
+
+/* ============ الواجهات (Views) ============ */
+function renderAuth(){
+  return `
+  <div style="min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:24px;">
+    <div style="text-align:center;margin-bottom:28px;">
+      <div style="width:64px;height:64px;background:var(--primary);border-radius:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;color:#fff;">${ICONS.store}</div>
+      <h1 style="font-size:22px;font-weight:700;">نظام الفوترة والمبيعات</h1>
+      <p class="muted" style="font-size:13.5px;margin-top:4px;">سجّل دخول أو أنشئ حساب جديد</p>
+    </div>
+    <div class="tabbar">
+      <button class="tab ${state.authMode==='login'?'active':''}" onclick="state.authMode='login';state.authError='';render()">تسجيل الدخول</button>
+      <button class="tab ${state.authMode==='signup'?'active':''}" onclick="state.authMode='signup';state.authError='';render()">إنشاء حساب</button>
+    </div>
+    <div class="card">
+      <div class="field"><label>البريد الإلكتروني</label><input id="auth-email" type="email" placeholder="name@example.com"></div>
+      <div class="field"><label>كلمة المرور</label><input id="auth-pass" type="password" placeholder="••••••••"></div>
+      ${state.authError ? `<div class="err-text">${state.authError}</div>` : ''}
+      <button class="btn btn-primary btn-block" style="margin-top:6px;" onclick="handleAuthSubmit(document.getElementById('auth-email').value, document.getElementById('auth-pass').value)" ${state.authLoading?'disabled':''}>
+        ${state.authLoading ? '<div class="spinner"></div>' : (state.authMode==='login'?'دخول':'إنشاء الحساب')}
+      </button>
+      ${state.authMode==='signup' ? '<p class="muted" style="font-size:12px;margin-top:10px;text-align:center;">راح يوصلك رابط تأكيد على بريدك بعد التسجيل</p>' : ''}
+    </div>
+  </div>`;
+}
+
+function renderSetupCompany(){
+  const c = state.company || {};
+  return `
+  <div class="topbar"><h1>بيانات المنشأة</h1></div>
+  <div class="page">
+    <p class="muted" style="font-size:13px;margin-bottom:16px;">هذي المعلومات بتظهر بأعلى كل فاتورة تصدرها</p>
+    <div class="card">
+      <div class="center" style="margin-bottom:16px;">
+        <label class="logo-upload" style="cursor:pointer;">
+          <span id="logo-preview">${c.logo_url? `<img src="${c.logo_url}">` : ICONS.store}</span>
+          <input type="file" accept="image/*" class="hidden" id="logo-input" onchange="handleLogoPreview(event)">
+        </label>
+      </div>
+      <div class="field"><label>اسم المنشأة *</label><input id="c-name" value="${c.name||''}" placeholder="مثال: محل النخبة"></div>
+      <div class="field"><label>رقم الجوال / واتساب</label><input id="c-phone" value="${c.phone||''}" placeholder="05xxxxxxxx"></div>
+      <div class="field"><label>العنوان</label><input id="c-address" value="${c.address||''}" placeholder="المدينة، الحي، الشارع"></div>
+      <div class="field"><label>الرقم الضريبي</label><input id="c-tax" value="${c.tax_number||''}" placeholder="30xxxxxxxxxxxxx"></div>
+      <div class="field"><label>رقم السجل التجاري</label><input id="c-cr" value="${c.commercial_register||''}" placeholder="10xxxxxxxx"></div>
+      <button class="btn btn-primary btn-block" onclick="submitCompanyForm()">حفظ ومتابعة</button>
+    </div>
+  </div>`;
+}
+let pendingLogoFile = null;
+function handleLogoPreview(e){
+  const file = e.target.files[0]; if(!file) return;
+  pendingLogoFile = file;
+  const reader = new FileReader();
+  reader.onload = ev => { document.getElementById('logo-preview').innerHTML = `<img src="${ev.target.result}">`; };
+  reader.readAsDataURL(file);
+}
+function submitCompanyForm(){
+  const name = document.getElementById('c-name').value.trim();
+  if(!name){ showToast("اسم المنشأة مطلوب"); return; }
+  const form = {
+    name,
+    phone: document.getElementById('c-phone').value.trim(),
+    whatsapp: document.getElementById('c-phone').value.trim(),
+    address: document.getElementById('c-address').value.trim(),
+    tax_number: document.getElementById('c-tax').value.trim(),
+    commercial_register: document.getElementById('c-cr').value.trim(),
+  };
+  saveCompany(form, pendingLogoFile);
+  pendingLogoFile = null;
+}
+
+function renderPOS(){
+  const total = cartSubtotal();
+  return `
+  <div class="topbar">
+    <h1>البيع السريع</h1>
+    <button onclick="state.view='products_page';render()" class="btn btn-sm btn-outline">${ICONS.box} المنتجات</button>
+  </div>
+  <div class="page">
+    ${state.products.length===0 ? `
+      <div class="empty">
+        ${ICONS.box}
+        <p style="margin-top:10px;">ما أضفت أي منتجات بعد</p>
+        <button class="btn btn-primary" style="margin:14px auto 0;" onclick="openModal('add_product')">${ICONS.plus} إضافة منتج</button>
+      </div>
+    ` : `
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;">
+        ${state.products.map(p=>`
+          <button class="prod-card" onclick='addProductToCart(${JSON.stringify(p).replace(/'/g,"&apos;")})'>
+            <div style="font-weight:700;font-size:13.5px;margin-bottom:4px;">${p.name}</div>
+            <div class="muted" style="font-size:12px;">${money(p.price)} ر.س</div>
+          </button>
+        `).join('')}
+      </div>
+    `}
+  </div>
+  <div class="cart-fab" onclick="openModal('checkout')">
+    ${state.cart.length>0 ? `
+      <div style="display:flex;align-items:center;gap:8px;">${ICONS.cart}<span>${state.cart.reduce((s,i)=>s+i.quantity,0)} صنف</span></div>
+      <div style="font-weight:700;">${money(total)} ر.س ›</div>
+    ` : `
+      <div style="display:flex;align-items:center;gap:8px;">${ICONS.plus}<span>إنشاء فاتورة</span></div>
+    `}
+  </div>
+  `;
+}
+
+function renderCheckoutModal(){
+  const subtotal = cartSubtotal();
+  const discount = parseFloat(state.checkout.discount)||0;
+  const taxable = Math.max(0, subtotal-discount);
+  const tax = taxable*0.15;
+  const total = taxable+tax;
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
+    <div class="modal-sheet">
+      <div class="modal-title"><span>إتمام البيع</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
+
+      <div class="field">
+        <label>العميل (اختياري)</label>
+        <select id="chk-customer" onchange="state.checkout.customerId=this.value">
+          <option value="">عميل نقدي</option>
+          ${state.customers.map(c=>`<option value="${c.id}" ${state.checkout.customerId===c.id?'selected':''}>${c.name}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="field"><label>إضافة بند يدوي</label>
+        <div style="display:flex;gap:8px;">
+          <input id="man-desc" placeholder="وصف الصنف" style="flex:2;">
+          <input id="man-price" type="number" placeholder="السعر" style="flex:1;">
+          <button class="btn btn-outline" style="width:44px;padding:0;" onclick="addManualItem(document.getElementById('man-desc').value, document.getElementById('man-price').value); document.getElementById('man-desc').value=''; document.getElementById('man-price').value='';">${ICONS.plus}</button>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);margin:10px 0;">
+        ${state.cart.map((i,idx)=>`
+          <div class="list-row">
+            <div style="flex:1;">
+              <div style="font-size:13.5px;font-weight:500;">${i.description}</div>
+              <div class="muted" style="font-size:11.5px;">${money(i.unit_price)} ر.س / وحدة</div>
+            </div>
+            <div class="qty-ctrl">
+              <button class="qty-btn" onclick="changeQty(${idx},-1)">−</button>
+              <span style="min-width:16px;text-align:center;">${i.quantity}</span>
+              <button class="qty-btn" onclick="changeQty(${idx},1)">+</button>
+              <button onclick="removeCartItem(${idx})" style="color:var(--danger);margin-right:4px;">${ICONS.x}</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+
+      <div class="field"><label>خصم (ر.س)</label><input id="chk-discount" type="number" value="${state.checkout.discount}" oninput="state.checkout.discount=this.value; refreshCheckoutTotals();"></div>
+
+      <label style="margin-bottom:8px;">طريقة الدفع</label>
+      <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin-bottom:16px;">
+        ${['cash','card','transfer'].map(m=>`
+          <button class="btn ${state.checkout.payment===m?'btn-primary':'btn-outline'}" style="flex-direction:column;padding:10px 4px;font-size:12px;" onclick="state.checkout.payment='${m}';render()">
+            ${m==='cash'?ICONS.cash:m==='card'?ICONS.card:ICONS.bank}
+            ${m==='cash'?'نقدي':m==='card'?'شبكة':'تحويل'}
+          </button>
+        `).join('')}
+      </div>
+
+      <div class="card" style="background:var(--bg);border:none;margin-bottom:16px;">
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:4px;"><span>المجموع الفرعي</span><span id="sum-sub">${money(subtotal)}</span></div>
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:4px;"><span>الخصم</span><span id="sum-disc">${money(discount)}</span></div>
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:8px;"><span>ضريبة 15%</span><span id="sum-tax">${money(tax)}</span></div>
+        <div class="between" style="font-size:18px;font-weight:700;"><span>الإجمالي</span><span id="sum-total" style="color:var(--primary);">${money(total)} ر.س</span></div>
+      </div>
+
+      <button class="btn btn-primary btn-block" onclick="confirmInvoice()">تأكيد وإصدار الفاتورة</button>
+    </div>
+  </div>`;
+}
+function refreshCheckoutTotals(){
+  const subtotal = cartSubtotal();
+  const discount = parseFloat(state.checkout.discount)||0;
+  const taxable = Math.max(0, subtotal-discount);
+  const tax = taxable*0.15;
+  const total = taxable+tax;
+  document.getElementById('sum-sub').textContent = money(subtotal);
+  document.getElementById('sum-disc').textContent = money(discount);
+  document.getElementById('sum-tax').textContent = money(tax);
+  document.getElementById('sum-total').textContent = money(total)+' ر.س';
+}
+
+function renderInvoiceView(){
+  const inv = state.lastInvoice;
+  const c = state.company;
+  if(!inv) return renderPOS();
+  return `
+  <div class="topbar">
+    <button onclick="state.cart=[];state.view='pos';render()">${ICONS.back}</button>
+    <h1>الفاتورة</h1>
+    <div style="width:20px;"></div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-bottom:16px;">
+      <div class="between" style="margin-bottom:14px;">
+        <div style="display:flex;gap:10px;align-items:center;">
+          <div class="avatar">${c?.logo_url?`<img src="${c.logo_url}" style="width:100%;height:100%;object-fit:cover;border-radius:10px;">`:ICONS.store}</div>
+          <div>
+            <div style="font-weight:700;font-size:14.5px;">${c?.name||''}</div>
+            <div class="muted" style="font-size:11px;">${c?.tax_number?('ر.ض: '+c.tax_number):''}</div>
+          </div>
+        </div>
+        <span class="pill" style="background:var(--success-bg);color:var(--success);">${ICONS.check} مدفوعة</span>
+      </div>
+      <div class="between" style="font-size:13px;margin-bottom:12px;color:var(--text-2);">
+        <span>#${inv.invoice_number}</span>
+        <span>${new Date(inv.created_at).toLocaleDateString('ar-SA')}</span>
+      </div>
+      <div class="between" style="margin-bottom:10px;">
+        <div><label style="margin:0;">فوترة إلى</label><div style="font-size:13.5px;">${inv.customer?.name||'عميل نقدي'}</div></div>
+        <div style="text-align:left;"><label style="margin:0;">الدفع</label><div style="font-size:13.5px;">${inv.payment_method==='cash'?'نقدي':inv.payment_method==='card'?'شبكة':'تحويل'}</div></div>
+      </div>
+      <div style="border-top:1px solid var(--border);padding-top:8px;">
+        ${inv.items.map(i=>`
+          <div class="between" style="font-size:13px;padding:6px 0;">
+            <span>${i.description} × ${i.quantity}</span><span>${money(i.line_total)}</span>
+          </div>
+        `).join('')}
+      </div>
+      <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:10px;">
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:3px;"><span>المجموع الفرعي</span><span>${money(inv.subtotal)}</span></div>
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:3px;"><span>الخصم</span><span>${money(inv.discount)}</span></div>
+        <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:6px;"><span>ضريبة 15%</span><span>${money(inv.tax)}</span></div>
+        <div class="between" style="font-size:19px;font-weight:700;"><span>الإجمالي</span><span style="color:var(--primary);">${money(inv.total)} ر.س</span></div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;">
+      <button class="btn btn-primary" style="flex:1;" onclick="shareWhatsapp()">${ICONS.whatsapp} مشاركة واتساب</button>
+      <button class="btn btn-outline" style="flex:1;" onclick="openModal('print_choice')">${ICONS.print} طباعة</button>
+    </div>
+  </div>`;
+}
+
+function renderPrintChoiceModal(){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
+    <div class="modal-sheet" style="padding-bottom:24px;">
+      <div class="modal-title"><span>اختر مقاس الطابعة</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;" onclick="state.modal=null;render();printInvoice('80')">رول 80 ملم</button>
+      <button class="btn btn-outline btn-block" onclick="state.modal=null;render();printInvoice('58')">رول 58 ملم</button>
+    </div>
+  </div>`;
+}
+
+function renderInvoicesPage(){
+  return `
+  <div class="topbar"><h1>الفواتير</h1></div>
+  <div class="page">
+    ${state.invoices.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">ما فيه فواتير بعد</p></div>` : `
+    <div class="card">
+      ${state.invoices.map(inv=>`
+        <div class="list-row" style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
+          <div>
+            <div style="font-weight:500;font-size:13.5px;">${inv.customers?.name || 'عميل نقدي'}</div>
+            <div class="muted" style="font-size:11.5px;">#${inv.invoice_number} · ${new Date(inv.created_at).toLocaleDateString('ar-SA')}</div>
+          </div>
+          <div style="font-weight:700;">${money(inv.total)} ر.س</div>
+        </div>
+      `).join('')}
+    </div>`}
+  </div>`;
+}
+
+function renderCustomersPage(){
+  return `
+  <div class="topbar"><h1>العملاء</h1><button class="btn btn-primary btn-sm" onclick="state.editItem=null;openModal('add_customer')">${ICONS.plus} إضافة</button></div>
+  <div class="page">
+    ${state.customers.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">ما أضفت عملاء بعد</p></div>` : `
+    <div class="card">
+      ${state.customers.map(c=>`
+        <div class="list-row">
+          <div style="display:flex;gap:10px;align-items:center;">
+            <div class="avatar">${c.name.slice(0,1)}</div>
+            <div>
+              <div style="font-weight:500;font-size:13.5px;">${c.name}</div>
+              <div class="muted" style="font-size:11.5px;">${c.phone||c.whatsapp||''}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:14px;">
+            <button onclick='state.editItem=${JSON.stringify(c).replace(/'/g,"&apos;")};openModal("add_customer")'>${ICONS.edit}</button>
+            <button onclick="deleteCustomer('${c.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>`}
+  </div>`;
+}
+
+function renderCustomerModal(){
+  const c = state.editItem || {};
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;state.editItem=null;render();}">
+    <div class="modal-sheet">
+      <div class="modal-title"><span>${c.id?'تعديل عميل':'إضافة عميل'}</span><button onclick="state.modal=null;state.editItem=null;render()">${ICONS.x}</button></div>
+      <div class="field"><label>الاسم *</label><input id="cu-name" value="${c.name||''}"></div>
+      <div class="field"><label>واتساب</label><input id="cu-wa" value="${c.whatsapp||''}" placeholder="05xxxxxxxx"></div>
+      <div class="field"><label>جوال آخر</label><input id="cu-phone" value="${c.phone||''}"></div>
+      <div class="field"><label>البريد الإلكتروني</label><input id="cu-email" value="${c.email||''}"></div>
+      <div class="field"><label>العنوان</label><input id="cu-address" value="${c.address||''}"></div>
+      <button class="btn btn-primary btn-block" onclick="submitCustomerForm()">حفظ</button>
+    </div>
+  </div>`;
+}
+function submitCustomerForm(){
+  const name = document.getElementById('cu-name').value.trim();
+  if(!name){ showToast("اسم العميل مطلوب"); return; }
+  saveCustomer({
+    name,
+    whatsapp: document.getElementById('cu-wa').value.trim(),
+    phone: document.getElementById('cu-phone').value.trim(),
+    email: document.getElementById('cu-email').value.trim(),
+    address: document.getElementById('cu-address').value.trim(),
+  });
+}
+
+function renderProductsPage(){
+  return `
+  <div class="topbar">
+    <button onclick="state.view='pos';render()">${ICONS.back}</button>
+    <h1>المنتجات</h1>
+    <button class="btn btn-primary btn-sm" onclick="state.editItem=null;openModal('add_product')">${ICONS.plus}</button>
+  </div>
+  <div class="page">
+    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">ما أضفت منتجات بعد</p></div>` : `
+    <div class="card">
+      ${state.products.map(p=>`
+        <div class="list-row">
+          <div>
+            <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
+            <div class="muted" style="font-size:11.5px;">${money(p.price)} ر.س / ${p.unit||'قطعة'}</div>
+          </div>
+          <div style="display:flex;gap:14px;">
+            <button onclick='state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
+            <button onclick="deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>`}
+  </div>`;
+}
+
+function renderProductModal(){
+  const p = state.editItem || {};
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;state.editItem=null;render();}">
+    <div class="modal-sheet">
+      <div class="modal-title"><span>${p.id?'تعديل منتج':'إضافة منتج'}</span><button onclick="state.modal=null;state.editItem=null;render()">${ICONS.x}</button></div>
+      <div class="field"><label>اسم المنتج / السلعة *</label><input id="pr-name" value="${p.name||''}"></div>
+      <div class="field"><label>السعر (ر.س) *</label><input id="pr-price" type="number" value="${p.price||''}"></div>
+      <div class="field"><label>الوحدة</label><input id="pr-unit" value="${p.unit||'قطعة'}"></div>
+      <div class="field"><label>وصف (اختياري)</label><textarea id="pr-desc" rows="2">${p.description||''}</textarea></div>
+      <button class="btn btn-primary btn-block" onclick="submitProductForm()">حفظ</button>
+    </div>
+  </div>`;
+}
+function submitProductForm(){
+  const name = document.getElementById('pr-name').value.trim();
+  const price = document.getElementById('pr-price').value;
+  if(!name || !price){ showToast("الاسم والسعر مطلوبين"); return; }
+  saveProduct({
+    name, price,
+    unit: document.getElementById('pr-unit').value.trim() || 'قطعة',
+    description: document.getElementById('pr-desc').value.trim(),
+  });
+}
+
+function renderDashboard(){
+  const d = computeDashboard();
+  setTimeout(()=>drawChart(d), 0);
+  return `
+  <div class="topbar"><h1>لوحة التحكم</h1></div>
+  <div class="page">
+    <div class="grid2" style="margin-bottom:12px;">
+      <div class="stat-card"><div class="muted" style="font-size:12px;">مبيعات اليوم</div><div class="val">${money(d.salesToday)}</div></div>
+      <div class="stat-card"><div class="muted" style="font-size:12px;">فواتير اليوم</div><div class="val">${d.countToday}</div></div>
+      <div class="stat-card"><div class="muted" style="font-size:12px;">مبيعات الشهر</div><div class="val">${money(d.salesMonth)}</div></div>
+      <div class="stat-card"><div class="muted" style="font-size:12px;">عدد العملاء</div><div class="val">${d.customersCount}</div></div>
+    </div>
+    <div class="card">
+      <p style="font-weight:700;font-size:14px;margin-bottom:10px;">المبيعات آخر 7 أيام</p>
+      <canvas id="salesChart" height="180"></canvas>
+    </div>
+  </div>`;
+}
+let chartInstance = null;
+function drawChart(d){
+  const canvas = document.getElementById('salesChart');
+  if(!canvas) return;
+  if(chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(canvas, {
+    type:'bar',
+    data:{
+      labels: d.days.map(x=>x.slice(5)),
+      datasets:[{ data: d.dailyTotals, backgroundColor:'#4F46E5', borderRadius:6 }]
+    },
+    options:{
+      plugins:{legend:{display:false}},
+      scales:{ y:{beginAtZero:true} }
+    }
+  });
+}
+
+function renderMoreSheet(){
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.navMoreOpen=false;render();}">
+    <div class="modal-sheet" style="padding-bottom:24px;">
+      <div class="modal-title"><span>المزيد</span><button onclick="state.navMoreOpen=false;render()">${ICONS.x}</button></div>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='customers_page';render()">${ICONS.user} العملاء</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='products_page';render()">${ICONS.box} المنتجات</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='setup_company';render()">${ICONS.settings} بيانات المنشأة</button>
+      <button class="btn btn-outline btn-block" style="color:var(--danger);justify-content:flex-start;" onclick="handleLogout()">${ICONS.logout} تسجيل الخروج</button>
+    </div>
+  </div>`;
+}
+
+function openModal(name){ state.modal = name; render(); }
+
+function renderBottomNav(){
+  if(['auth','setup_company','loading'].includes(state.view)) return '';
+  const items = [
+    {id:'pos', label:'البيع', icon:ICONS.home},
+    {id:'invoices_page', label:'الفواتير', icon:ICONS.list},
+    {id:'dashboard', label:'التحكم', icon:ICONS.chart},
+    {id:'more', label:'المزيد', icon:ICONS.more},
+  ];
+  return `<div class="bottomnav">
+    ${items.map(it=>`
+      <button class="navitem ${state.view===it.id?'active':''}" onclick="${it.id==='more'?'state.navMoreOpen=true;render()':`state.view='${it.id}';render()`}">
+        ${it.icon}<span>${it.label}</span>
+      </button>
+    `).join('')}
+  </div>`;
+}
+
+/* ============ التوجيه الرئيسي ============ */
+function render(){
+  const app = document.getElementById('app');
+  let html = '';
+  switch(state.view){
+    case 'loading': html = `<div style="min-height:100vh;" class="center"><div class="spinner spinner-dark" style="width:28px;height:28px;"></div></div>`; break;
+    case 'auth': html = renderAuth(); break;
+    case 'setup_company': html = renderSetupCompany(); break;
+    case 'pos': html = renderPOS(); break;
+    case 'invoice_view': html = renderInvoiceView(); break;
+    case 'invoices_page': html = renderInvoicesPage(); break;
+    case 'customers_page': html = renderCustomersPage(); break;
+    case 'products_page': html = renderProductsPage(); break;
+    case 'dashboard': html = renderDashboard(); break;
+    default: html = renderPOS();
+  }
+  html += renderBottomNav();
+  if(state.modal==='checkout') html += renderCheckoutModal();
+  if(state.modal==='add_customer') html += renderCustomerModal();
+  if(state.modal==='add_product') html += renderProductModal();
+  if(state.modal==='print_choice') html += renderPrintChoiceModal();
+  if(state.navMoreOpen) html += renderMoreSheet();
+  if(state.toastMsg) html += `<div class="toast">${state.toastMsg}</div>`;
+  app.innerHTML = html;
+}
+
+initApp();
+</script>
+</body>
+</html>
