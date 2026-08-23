@@ -14,8 +14,6 @@
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <style>
 :root{
@@ -110,7 +108,6 @@ label{font-size:12.5px;color:var(--text-2);display:block;margin-bottom:6px;font-
 <body>
 <div id="app"></div>
 <div id="print-area"></div>
-<div id="pdf-capture" style="position:fixed;top:-9999px;left:-9999px;width:302px;background:#fff;"></div>
 
 <script>
 /* ============ إعداد Supabase ============ */
@@ -207,19 +204,24 @@ async function loadAllData(){
 }
 
 async function initApp(){
-  // لو الرابط رابط فاتورة مختصر (?i=code)، نحوّل مباشرة لملف الفاتورة الفعلي بدون فتح التطبيق
+  // لو الرابط رابط فاتورة مختصر (?i=code)، نعرض الفاتورة كصفحة مباشرة (نص عربي مثالي، بدون تحويل PDF)
   const shortCode = new URLSearchParams(window.location.search).get('i');
   if(shortCode){
     document.getElementById('app').innerHTML = `<div style="min-height:100vh;" class="center"><div class="spinner spinner-dark" style="width:28px;height:28px;"></div></div>`;
-    const { data, error } = await sb.from('invoice_links').select('storage_path').eq('code', shortCode).maybeSingle();
-    if(!error && data){
-      const { data: urlData } = sb.storage.from('invoices').getPublicUrl(data.storage_path);
-      window.location.replace(urlData.publicUrl);
-      return;
+    const { data, error } = await sb.from('invoice_links').select('invoice_data').eq('code', shortCode).maybeSingle();
+    if(!error && data && data.invoice_data){
+      const inv = data.invoice_data.invoice;
+      const c = data.invoice_data.company;
+      document.getElementById('app').innerHTML = `
+        <div style="padding:16px;">
+          <div class="card" style="padding:0;overflow:hidden;margin-bottom:14px;">${invoiceReceiptHTML(inv, c)}</div>
+          <button class="btn btn-primary btn-block" onclick="window.print()">${ICONS.print} طباعة / حفظ كملف PDF</button>
+        </div>`;
+      renderQrInto(`qr-holder-${inv.id}`, inv, c);
     } else {
       document.getElementById('app').innerHTML = `<div style="min-height:100vh;padding:24px;text-align:center;" class="center"><p>الرابط غير صالح أو منتهي</p></div>`;
-      return;
     }
+    return;
   }
   if(window.location.hash.includes('type=recovery')){
     state.view = "reset_password";
@@ -625,107 +627,40 @@ function printInvoice(){
   setTimeout(()=>window.print(), 150);
 }
 
-/* ============ توليد PDF (بالتقاط تصيير المتصفح لدعم العربي والشعار) ============ */
-async function generatePdfBlob(widthMm){
-  const pdfWidth = widthMm || 80;
-  const inv = state.lastInvoice, c = state.company;
-  const capture = document.getElementById('pdf-capture');
-  capture.innerHTML = invoiceReceiptHTML(inv, c);
-  renderQrInto(`qr-holder-${inv.id}`, inv, c);
-  if(document.fonts && document.fonts.ready){ await document.fonts.ready; }
-  await new Promise(r=>setTimeout(r, 150));
-  let canvas;
-  try{
-    canvas = await html2canvas(capture, { scale:1.6, useCORS:true, allowTaint:false, backgroundColor:'#ffffff' });
-  }catch(err){
-    capture.innerHTML = '';
-    throw new Error('تعذّر إنشاء صورة الفاتورة: '+err.message);
-  }
-  const imgData = canvas.toDataURL('image/jpeg', 0.85);
-  const { jsPDF } = window.jspdf;
-  const pdfHeight = canvas.height * pdfWidth / canvas.width;
-  const doc = new jsPDF({ unit:'mm', format:[pdfWidth, pdfHeight] });
-  doc.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
-  capture.innerHTML = '';
-  return doc.output('blob');
-}
-
 /* ============ مشاركة واتساب (مباشرة لمحادثة العميل) ============ */
-async function shareWhatsapp(){
+function shareWhatsapp(){
   const inv = state.lastInvoice, c = state.company;
   const companyName = c?.name || '';
 
-  // نفتح نافذة فارغة فوراً (بنفس لحظة الضغطة) عشان المتصفح ما يحجبها لاحقاً كنافذة منبثقة
-  const waWindow = window.open('', '_blank');
-
-  showToast("جارٍ تجهيز رابط الفاتورة...");
-  let blob;
-  try{
-    blob = await generatePdfBlob();
-  }catch(err){
-    if(waWindow) waWindow.close();
-    showToast(err.message || "تعذّر تجهيز ملف الفاتورة، حاول مرة أخرى");
-    return;
-  }
-
-  // رفع الفاتورة كملف عام، ثم توليد رابط مختصر يشير له (بدل الرابط الطويل المباشر)
-  let invoiceLink = '';
-  try{
-    const path = `${state.user.id}/invoice-${inv.invoice_number}-${Date.now()}.pdf`;
-    const { error: upErr } = await sb.storage.from('invoices').upload(path, blob, { contentType:'application/pdf', upsert:true });
-    if(upErr){
-      console.error('storage upload error:', upErr);
-      showToast("تعذّر رفع الفاتورة: "+upErr.message);
-    } else {
-      const code = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
-      const { error: linkErr } = await sb.from('invoice_links').insert({ code, storage_path: path, user_id: state.user.id });
-      if(!linkErr){
-        invoiceLink = `${window.location.origin}${window.location.pathname}?i=${code}`;
-      } else {
-        console.error('invoice_links insert error:', linkErr);
-        showToast("تعذّر إنشاء رابط مختصر: "+linkErr.message);
-        const { data } = sb.storage.from('invoices').getPublicUrl(path);
-        invoiceLink = data.publicUrl;
-      }
-    }
-  }catch(e){
-    console.error('shareWhatsapp link error:', e);
-    showToast("خطأ غير متوقع بتجهيز الرابط: "+e.message);
-  }
+  // نولّد الرمز محلياً فوراً (بدون انتظار الشبكة) عشان نبني الرابط ونفتح واتساب مباشرة
+  const code = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
+  const invoiceLink = `${window.location.origin}${window.location.pathname}?i=${code}`;
 
   const custName = inv.customer?.name || '';
   const greetingAr = custName ? `عزيزنا ${custName}،` : 'عزيزنا العميل،';
-  const text = invoiceLink
-    ? `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}`
-    : `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nفاتورتكم رقم ${inv.invoice_number}.`;
-
-  const file = new File([blob], `invoice-${inv.invoice_number}.pdf`, { type:'application/pdf' });
+  const text = `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}`;
 
   let phone = inv.customer?.whatsapp || inv.customer?.phone || '';
   phone = phone.replace(/[^0-9]/g,'');
   if(phone && phone.startsWith('0')) phone = '966'+phone.slice(1);
 
-  if(!invoiceLink){
-    // لو فشل رفع الرابط، ننزّل الملف محلياً كخطة بديلة (يحتاج إرفاق يدوي)
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href=url; a.download=`invoice-${inv.invoice_number}.pdf`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
-  }
+  const waUrl = phone
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
 
-  if(phone){
-    const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`;
-    showToast(invoiceLink ? "تم إنشاء رابط الفاتورة وفتح المحادثة" : "تم تحميل الفاتورة، يرجى فتح واتساب وإرفاقها بالمحادثة");
-    if(waWindow) waWindow.location.href = waUrl; else window.open(waUrl, '_blank');
-  } else if(!invoiceLink && navigator.canShare && navigator.canShare({ files:[file] })){
-    if(waWindow) waWindow.close();
-    try{ await navigator.share({ files:[file], text, title:`فاتورة ${inv.invoice_number}` }); return; }
-    catch(e){}
-  } else {
-    showToast(invoiceLink ? "لا يوجد رقم مسجل لهذا العميل، تم إنشاء رابط الفاتورة، يرجى اختيار المستلم يدوياً بواتساب" : "لا يوجد رقم مسجل لهذا العميل، تم تحميل الفاتورة، يرجى فتح واتساب واختيار المستلم يدوياً");
-    const genericUrl = `https://wa.me/?text=${encodeURIComponent(text)}`;
-    if(waWindow) waWindow.location.href = genericUrl; else window.open(genericUrl, '_blank');
-  }
+  // نفتح واتساب فوراً بدون أي انتظار
+  window.open(waUrl, '_blank');
+  if(!phone) showToast("لا يوجد رقم مسجل لهذا العميل، افتح واتساب واختر المستلم يدوياً");
+
+  // نحفظ بيانات الفاتورة بالخلفية (لا يعطّل فتح واتساب)
+  const snapshot = { invoice: inv, company: c };
+  sb.from('invoice_links').insert({ code, invoice_data: snapshot, user_id: state.user.id })
+    .then(({ error }) => {
+      if(error){
+        console.error('invoice_links insert error:', error);
+        showToast("تنبيه: تعذّر حفظ رابط الفاتورة بالخلفية، الرابط قد لا يعمل");
+      }
+    });
 }
 
 /* ============ لوحة التحكم ============ */
