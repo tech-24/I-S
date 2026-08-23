@@ -215,9 +215,10 @@ async function initApp(){
       document.getElementById('app').innerHTML = `
         <div style="padding:16px;">
           <div class="card" style="padding:0;overflow:hidden;margin-bottom:14px;">${invoiceReceiptHTML(inv, c)}</div>
-          <button class="btn btn-primary btn-block" onclick="window.print()">${ICONS.print} طباعة / حفظ كملف PDF</button>
+          <button class="btn btn-primary btn-block" onclick="printSharedInvoice()">${ICONS.print} طباعة / حفظ كملف PDF</button>
         </div>`;
-      renderQrInto(`qr-holder-${inv.id}`, inv, c);
+      renderQrInto(`qr-holder-${inv.id}`, inv, c, document.getElementById('app'));
+      window._sharedInvoiceForPrint = { inv, c };
     } else {
       document.getElementById('app').innerHTML = `<div style="min-height:100vh;padding:24px;text-align:center;" class="center"><p>الرابط غير صالح أو منتهي</p></div>`;
     }
@@ -608,8 +609,8 @@ function invoiceReceiptHTML(inv, c){
     </div>
   </div>`;
 }
-function renderQrInto(containerId, inv, c){
-  const el = document.getElementById(containerId);
+function renderQrInto(containerId, inv, c, scopeEl){
+  const el = (scopeEl || document).querySelector('#'+containerId);
   if(!el || typeof QRCode==='undefined') return;
   const text = `${c?.name||''} | Invoice #${inv.invoice_number} | ${new Date(inv.created_at).toLocaleDateString()} | Total: ${money(inv.total)} SAR`;
   QRCode.toCanvas(document.createElement('canvas'), text, {width:64, margin:0}, (err, canvas)=>{
@@ -623,7 +624,17 @@ function printInvoice(){
   const area = document.getElementById('print-area');
   area.className = '';
   area.innerHTML = invoiceReceiptHTML(inv, c);
-  renderQrInto(`qr-holder-${inv.id}`, inv, c);
+  renderQrInto(`qr-holder-${inv.id}`, inv, c, area);
+  setTimeout(()=>window.print(), 150);
+}
+
+function printSharedInvoice(){
+  const { inv, c } = window._sharedInvoiceForPrint || {};
+  if(!inv) return;
+  const area = document.getElementById('print-area');
+  area.className = '';
+  area.innerHTML = invoiceReceiptHTML(inv, c);
+  renderQrInto(`qr-holder-${inv.id}`, inv, c, area);
   setTimeout(()=>window.print(), 150);
 }
 
@@ -950,7 +961,7 @@ function refreshCheckoutTotals(){
 function renderInvoiceView(){
   const inv = state.lastInvoice, c = state.company;
   if(!inv) return renderPOS();
-  setTimeout(()=>renderQrInto(`qr-holder-${inv.id}`, inv, c), 0);
+  setTimeout(()=>renderQrInto(`qr-holder-${inv.id}`, inv, c, document.getElementById('app')), 0);
   const statusColors = { paid:['var(--success-bg)','var(--success)'], unpaid:['var(--warn-bg)','var(--warn)'], cancelled:['var(--danger-bg)','var(--danger)'] };
   const [sbg, sfg] = statusColors[inv.status] || statusColors.paid;
   return `
