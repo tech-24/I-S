@@ -142,6 +142,9 @@ const state = {
   viewingHistorical: false,
   navMoreOpen: false,
   posSearch: "",
+  invoicesSearch: "",
+  invoicesRange: "week",
+  invoiceDaysToggled: null,
   contactDraft: [],
   dashRange: "week",
   dashFrom: "",
@@ -613,21 +616,13 @@ function renderQrInto(containerId, inv, c){
 }
 
 /* ============ طباعة ============ */
-async function printInvoice(width){
-  // نفتح نافذة فارغة فوراً بلحظة الضغطة عشان المتصفح ما يحجبها (نفس حل مشكلة واتساب)
-  const printWindow = window.open('', '_blank');
-  showToast("جارٍ تجهيز ملف الطباعة...");
-  let blob;
-  try{
-    blob = await generatePdfBlob(width==='58'?58:80);
-  }catch(err){
-    if(printWindow) printWindow.close();
-    showToast(err.message || "تعذّر تجهيز ملف الطباعة");
-    return;
-  }
-  const url = URL.createObjectURL(blob);
-  if(printWindow) printWindow.location.href = url; else window.open(url, '_blank');
-  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+function printInvoice(){
+  const inv = state.lastInvoice, c = state.company;
+  const area = document.getElementById('print-area');
+  area.className = '';
+  area.innerHTML = invoiceReceiptHTML(inv, c);
+  renderQrInto(`qr-holder-${inv.id}`, inv, c);
+  setTimeout(()=>window.print(), 150);
 }
 
 /* ============ توليد PDF (بالتقاط تصيير المتصفح لدعم العربي والشعار) ============ */
@@ -1040,7 +1035,7 @@ function renderInvoiceView(){
     </div>
     <div style="display:flex;gap:10px;">
       <button class="btn btn-primary" style="flex:1;" onclick="shareWhatsapp()">${ICONS.whatsapp} مشاركة واتساب</button>
-      <button class="btn btn-outline" style="flex:1;" onclick="openModal('print_choice')">${ICONS.print} طباعة</button>
+      <button class="btn btn-outline" style="flex:1;" onclick="printInvoice()">${ICONS.print} طباعة</button>
     </div>
   </div>`;
 }
@@ -1049,17 +1044,6 @@ function handleInvoiceBack(){
   state.view = state.viewingHistorical ? 'invoices_page' : 'pos';
   state.viewingHistorical = false;
   render();
-}
-
-function renderPrintChoiceModal(){
-  return `
-  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
-    <div class="modal-sheet" style="padding-bottom:24px;">
-      <div class="modal-title"><span>اختر مقاس الطابعة</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
-      <button class="btn btn-outline btn-block" style="margin-bottom:10px;" onclick="state.modal=null;render();printInvoice('80')">رول 80 ملم</button>
-      <button class="btn btn-outline btn-block" onclick="state.modal=null;render();printInvoice('58')">رول 58 ملم</button>
-    </div>
-  </div>`;
 }
 
 function groupInvoicesByDay(invoices){
@@ -1073,19 +1057,62 @@ function groupInvoicesByDay(invoices){
     groups[day].push(inv);
   });
   return Object.keys(groups).sort((a,b)=>b.localeCompare(a)).map(day=>({
+    key: day,
     label: day===today ? 'اليوم' : day===yesterday ? 'أمس' : fmtDate(day),
-    invoices: groups[day]
+    invoices: groups[day],
+    total: groups[day].reduce((s,i)=>s+parseFloat(i.total),0)
   }));
+}
+function toggleInvoiceDay(key){
+  if(!state.invoiceDaysToggled) state.invoiceDaysToggled = new Set();
+  if(state.invoiceDaysToggled.has(key)) state.invoiceDaysToggled.delete(key);
+  else state.invoiceDaysToggled.add(key);
+  render();
+}
+function invoicesRangeFilter(invoices){
+  if(state.invoicesRange==='all') return invoices;
+  const today = new Date();
+  let from;
+  if(state.invoicesRange==='today') from = isoDay(today);
+  else if(state.invoicesRange==='week'){ const d=new Date(today); d.setDate(d.getDate()-6); from = isoDay(d); }
+  else { const d=new Date(today); d.setDate(d.getDate()-29); from = isoDay(d); }
+  return invoices.filter(i=>isoDay(i.created_at) >= from);
 }
 
 function renderInvoicesPage(){
-  const groups = groupInvoicesByDay(state.invoices);
+  if(!state.invoiceDaysToggled) state.invoiceDaysToggled = new Set();
+  let filtered = invoicesRangeFilter(state.invoices);
+  if(state.invoicesSearch && state.invoicesSearch.trim()){
+    const q = state.invoicesSearch.trim();
+    filtered = filtered.filter(inv => (inv.customers?.name||'').includes(q) || inv.invoice_number.includes(q));
+  }
+  const searching = !!(state.invoicesSearch && state.invoicesSearch.trim());
+  const groups = groupInvoicesByDay(filtered);
   return `
   <div class="topbar"><h1>الفواتير</h1></div>
   <div class="page">
-    ${state.invoices.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">لا توجد فواتير بعد</p></div>` :
-      groups.map(g=>`
-        <div class="day-header">${g.label}</div>
+    <div style="position:relative;margin-bottom:10px;">
+      <input placeholder="ابحث باسم العميل أو رقم الفاتورة..." value="${state.invoicesSearch||''}" oninput="state.invoicesSearch=this.value;render()" style="padding-left:34px;">
+      <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
+    </div>
+    <div class="tabbar" style="margin-bottom:14px;">
+      ${[['today','اليوم'],['week','أسبوع'],['month','شهر'],['all','الكل']].map(([val,label])=>`
+        <button class="tab ${state.invoicesRange===val?'active':''}" onclick="state.invoicesRange='${val}';render()">${label}</button>
+      `).join('')}
+    </div>
+    ${filtered.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">${state.invoices.length===0?'لا توجد فواتير بعد':'لا توجد نتائج مطابقة'}</p></div>` :
+      groups.map((g,idx)=>{
+        const defaultExpanded = idx===0;
+        const expanded = searching ? true : (state.invoiceDaysToggled.has(g.key) ? !defaultExpanded : defaultExpanded);
+        return `
+        <div class="day-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;" onclick="toggleInvoiceDay('${g.key}')">
+          <span>${g.label} · ${g.invoices.length} فاتورة</span>
+          <span style="display:flex;align-items:center;gap:6px;">
+            <span>${money(g.total)} ر.س</span>
+            <span style="display:inline-block;transition:transform .15s;transform:rotate(${expanded?'0':'-90'}deg);">${ICONS.back}</span>
+          </span>
+        </div>
+        ${expanded ? `
         <div class="card">
           ${g.invoices.map(inv=>`
             <div class="list-row">
@@ -1103,8 +1130,9 @@ function renderInvoicesPage(){
               </div>
             </div>
           `).join('')}
-        </div>
-      `).join('')
+        </div>` : ''}
+      `;
+      }).join('')
     }
   </div>`;
 }
@@ -1365,7 +1393,6 @@ function render(){
   if(state.modal==='checkout') html += renderCheckoutModal();
   if(state.modal==='add_customer') html += renderCustomerModal();
   if(state.modal==='add_product') html += renderProductModal();
-  if(state.modal==='print_choice') html += renderPrintChoiceModal();
   if(state.modal==='edit_invoice') html += renderEditInvoiceModal();
   if(state.navMoreOpen) html += renderMoreSheet();
   if(state.toastMsg) html += `<div class="toast">${state.toastMsg}</div>`;
