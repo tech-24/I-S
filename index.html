@@ -670,21 +670,32 @@ async function shareWhatsapp(){
   try{
     const path = `${state.user.id}/invoice-${inv.invoice_number}-${Date.now()}.pdf`;
     const { error: upErr } = await sb.storage.from('invoices').upload(path, blob, { contentType:'application/pdf', upsert:true });
-    if(!upErr){
+    if(upErr){
+      console.error('storage upload error:', upErr);
+      showToast("تعذّر رفع الفاتورة: "+upErr.message);
+    } else {
       const code = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
       const { error: linkErr } = await sb.from('invoice_links').insert({ code, storage_path: path, user_id: state.user.id });
       if(!linkErr){
         invoiceLink = `${window.location.origin}${window.location.pathname}?i=${code}`;
       } else {
+        console.error('invoice_links insert error:', linkErr);
+        showToast("تعذّر إنشاء رابط مختصر: "+linkErr.message);
         const { data } = sb.storage.from('invoices').getPublicUrl(path);
         invoiceLink = data.publicUrl;
       }
     }
-  }catch(e){}
+  }catch(e){
+    console.error('shareWhatsapp link error:', e);
+    showToast("خطأ غير متوقع بتجهيز الرابط: "+e.message);
+  }
 
+  const custName = inv.customer?.name || '';
+  const greetingAr = custName ? `عزيزنا ${custName}،` : 'عزيزنا العميل،';
+  const greetingEn = custName ? `Dear ${custName},` : 'Dear Customer,';
   const text = invoiceLink
-    ? `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} عبر الرابط التالي:\n${invoiceLink}\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number} via the link below:\n${invoiceLink}`
-    : `*عزيزنا العميل*\n\nنشكر لكم زيارة "${companyName}"، ويمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number}.\n\n*Dear Customer*\n\nThank you for visiting "${companyName}", please find your purchase invoice #${inv.invoice_number}.`;
+    ? `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}\n\n${greetingEn}\nThank you for choosing ${companyName}.\nYou can view your invoice #${inv.invoice_number} here:\n${invoiceLink}`
+    : `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nفاتورتكم رقم ${inv.invoice_number}.\n\n${greetingEn}\nThank you for choosing ${companyName}.\nYour invoice #${inv.invoice_number}.`;
 
   const file = new File([blob], `invoice-${inv.invoice_number}.pdf`, { type:'application/pdf' });
 
