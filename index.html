@@ -628,13 +628,26 @@ function printInvoice(){
 }
 
 /* ============ مشاركة واتساب (مباشرة لمحادثة العميل) ============ */
-function shareWhatsapp(){
+async function shareWhatsapp(){
   const inv = state.lastInvoice, c = state.company;
   const companyName = c?.name || '';
 
-  // نولّد الرمز محلياً فوراً (بدون انتظار الشبكة) عشان نبني الرابط ونفتح واتساب مباشرة
+  // نفتح نافذة فارغة فوراً (بنفس لحظة الضغطة) عشان المتصفح ما يحجبها لاحقاً كنافذة منبثقة
+  const waWindow = window.open('', '_blank');
+
   const code = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
   const invoiceLink = `${window.location.origin}${window.location.pathname}?i=${code}`;
+
+  // لازم ننتظر اكتمال الحفظ فعلياً قبل فتح واتساب، لأن الجوال يوقف أي عملية بالخلفية
+  // فور ما تنتقل لتطبيق ثاني، فلو ما انتظرنا يصير الرابط غير صالح
+  const snapshot = { invoice: inv, company: c };
+  const { error: linkErr } = await sb.from('invoice_links').insert({ code, invoice_data: snapshot, user_id: state.user.id });
+  if(linkErr){
+    console.error('invoice_links insert error:', linkErr);
+    if(waWindow) waWindow.close();
+    showToast("تعذّر إنشاء رابط الفاتورة: "+linkErr.message);
+    return;
+  }
 
   const custName = inv.customer?.name || '';
   const greetingAr = custName ? `عزيزنا ${custName}،` : 'عزيزنا العميل،';
@@ -648,19 +661,8 @@ function shareWhatsapp(){
     ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
     : `https://wa.me/?text=${encodeURIComponent(text)}`;
 
-  // نفتح واتساب فوراً بدون أي انتظار
-  window.open(waUrl, '_blank');
+  if(waWindow) waWindow.location.href = waUrl; else window.open(waUrl, '_blank');
   if(!phone) showToast("لا يوجد رقم مسجل لهذا العميل، افتح واتساب واختر المستلم يدوياً");
-
-  // نحفظ بيانات الفاتورة بالخلفية (لا يعطّل فتح واتساب)
-  const snapshot = { invoice: inv, company: c };
-  sb.from('invoice_links').insert({ code, invoice_data: snapshot, user_id: state.user.id })
-    .then(({ error }) => {
-      if(error){
-        console.error('invoice_links insert error:', error);
-        showToast("تنبيه: تعذّر حفظ رابط الفاتورة بالخلفية، الرابط قد لا يعمل");
-      }
-    });
 }
 
 /* ============ لوحة التحكم ============ */
