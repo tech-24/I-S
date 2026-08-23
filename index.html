@@ -613,36 +613,41 @@ function renderQrInto(containerId, inv, c){
 }
 
 /* ============ طباعة ============ */
-function printInvoice(width){
-  const inv = state.lastInvoice, c = state.company;
-  const area = document.getElementById('print-area');
-  area.className = width==='58'?'w58':'';
-  area.innerHTML = invoiceReceiptHTML(inv, c);
-  renderQrInto(`qr-holder-${inv.id}`, inv, c);
-  setTimeout(()=>window.print(), 150);
+async function printInvoice(width){
+  showToast("جارٍ تجهيز ملف الطباعة...");
+  let blob;
+  try{
+    blob = await generatePdfBlob(width==='58'?58:80);
+  }catch(err){
+    showToast(err.message || "تعذّر تجهيز ملف الطباعة");
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
 }
 
 /* ============ توليد PDF (بالتقاط تصيير المتصفح لدعم العربي والشعار) ============ */
-async function generatePdfBlob(){
+async function generatePdfBlob(widthMm){
+  const pdfWidth = widthMm || 80;
   const inv = state.lastInvoice, c = state.company;
   const capture = document.getElementById('pdf-capture');
   capture.innerHTML = invoiceReceiptHTML(inv, c);
   renderQrInto(`qr-holder-${inv.id}`, inv, c);
   if(document.fonts && document.fonts.ready){ await document.fonts.ready; }
-  await new Promise(r=>setTimeout(r, 350));
+  await new Promise(r=>setTimeout(r, 150));
   let canvas;
   try{
-    canvas = await html2canvas(capture, { scale:2.5, useCORS:true, allowTaint:false, backgroundColor:'#ffffff' });
+    canvas = await html2canvas(capture, { scale:1.6, useCORS:true, allowTaint:false, backgroundColor:'#ffffff' });
   }catch(err){
     capture.innerHTML = '';
     throw new Error('تعذّر إنشاء صورة الفاتورة: '+err.message);
   }
-  const imgData = canvas.toDataURL('image/png');
+  const imgData = canvas.toDataURL('image/jpeg', 0.85);
   const { jsPDF } = window.jspdf;
-  const pdfWidth = 80;
   const pdfHeight = canvas.height * pdfWidth / canvas.width;
   const doc = new jsPDF({ unit:'mm', format:[pdfWidth, pdfHeight] });
-  doc.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+  doc.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
   capture.innerHTML = '';
   return doc.output('blob');
 }
@@ -692,10 +697,9 @@ async function shareWhatsapp(){
 
   const custName = inv.customer?.name || '';
   const greetingAr = custName ? `عزيزنا ${custName}،` : 'عزيزنا العميل،';
-  const greetingEn = custName ? `Dear ${custName},` : 'Dear Customer,';
   const text = invoiceLink
-    ? `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}\n\n${greetingEn}\nThank you for choosing ${companyName}.\nYou can view your invoice #${inv.invoice_number} here:\n${invoiceLink}`
-    : `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nفاتورتكم رقم ${inv.invoice_number}.\n\n${greetingEn}\nThank you for choosing ${companyName}.\nYour invoice #${inv.invoice_number}.`;
+    ? `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}`
+    : `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nفاتورتكم رقم ${inv.invoice_number}.`;
 
   const file = new File([blob], `invoice-${inv.invoice_number}.pdf`, { type:'application/pdf' });
 
