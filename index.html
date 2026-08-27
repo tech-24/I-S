@@ -201,7 +201,9 @@ const FAVICON_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIA
 /* ============ تحميل بيانات المستخدم ============ */
 function postLoginView(){
   if(!state.company) return "setup_company";
-  if(state.staffProfiles && state.staffProfiles.length>0) return "select_profile";
+  if((state.staffProfiles && state.staffProfiles.length>0) || state.company.admin_pin){
+    return "select_profile";
+  }
   state.activeProfile = { role:'admin' };
   return "pos";
 }
@@ -975,12 +977,13 @@ function renderSelectProfile(){
       <h1 style="font-size:19px;font-weight:700;">اختر المستخدم</h1>
       <p class="muted" style="font-size:13px;margin-top:4px;">${state.company?.name||''}</p>
     </div>
-    <button class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:10px;width:100%;text-align:right;" onclick="selectAdminProfile()">
+    <button class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:10px;width:100%;text-align:right;" onclick="promptAdminPin()">
       <div class="avatar" style="width:44px;height:44px;">${ICONS.settings}</div>
       <div style="flex:1;">
         <div style="font-weight:700;font-size:14.5px;">أنت (الأدمن)</div>
         <div class="muted" style="font-size:12px;">وصول كامل لكل الشاشات</div>
       </div>
+      ${!state.company?.admin_pin ? `<span class="pill" style="background:var(--warn-bg);color:var(--warn);">بدون رمز</span>` : ''}
     </button>
     ${state.staffProfiles.map(p=>`
       <button class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:10px;width:100%;text-align:right;" onclick="promptStaffPin('${p.id}')">
@@ -998,17 +1001,29 @@ function renderSelectProfile(){
   </div>`;
 }
 function renderPinPrompt(){
-  const p = state.staffProfiles.find(x=>x.id===state.pinAttemptProfile);
-  if(!p) return '';
+  const isAdmin = state.pinAttemptProfile === 'admin';
+  const p = isAdmin ? null : state.staffProfiles.find(x=>x.id===state.pinAttemptProfile);
+  if(!isAdmin && !p) return '';
+  const label = isAdmin ? 'رمز الأدمن' : `رمز ${p.name}`;
   return `
   <div class="modal-overlay" onclick="if(event.target===this){state.pinAttemptProfile=null;state.pinAttemptError='';render();}">
     <div class="modal-sheet">
-      <div class="modal-title"><span>رمز ${p.name}</span><button onclick="state.pinAttemptProfile=null;state.pinAttemptError='';render()">${ICONS.x}</button></div>
+      <div class="modal-title"><span>${label}</span><button onclick="state.pinAttemptProfile=null;state.pinAttemptError='';render()">${ICONS.x}</button></div>
       <div class="field"><label>أدخل الرمز</label><input id="pin-input" type="tel" inputmode="numeric" maxlength="6" placeholder="••••••" style="text-align:center;font-size:22px;letter-spacing:6px;"></div>
       ${state.pinAttemptError ? `<div class="err-text">${state.pinAttemptError}</div>` : ''}
-      <button class="btn btn-primary btn-block" onclick="submitStaffPin('${p.id}')">دخول</button>
+      <button class="btn btn-primary btn-block" onclick="submitStaffPin('${state.pinAttemptProfile}')">دخول</button>
     </div>
   </div>`;
+}
+function promptAdminPin(){
+  if(!state.company?.admin_pin){
+    selectAdminProfile();
+    return;
+  }
+  state.pinAttemptProfile = 'admin';
+  state.pinAttemptError = "";
+  render();
+  setTimeout(()=>document.getElementById('pin-input')?.focus(), 100);
 }
 function promptStaffPin(profileId){
   state.pinAttemptProfile = profileId;
@@ -1017,8 +1032,20 @@ function promptStaffPin(profileId){
   setTimeout(()=>document.getElementById('pin-input')?.focus(), 100);
 }
 function submitStaffPin(profileId){
-  const p = state.staffProfiles.find(x=>x.id===profileId);
   const entered = document.getElementById('pin-input')?.value.trim();
+  if(profileId === 'admin'){
+    if(entered !== state.company?.admin_pin){
+      state.pinAttemptError = "الرمز غير صحيح";
+      render();
+      setTimeout(()=>document.getElementById('pin-input')?.focus(), 100);
+      return;
+    }
+    state.pinAttemptProfile = null;
+    state.pinAttemptError = "";
+    selectAdminProfile();
+    return;
+  }
+  const p = state.staffProfiles.find(x=>x.id===profileId);
   if(!p || entered !== p.pin){
     state.pinAttemptError = "الرمز غير صحيح";
     render();
@@ -1115,6 +1142,12 @@ function renderSetupCompany(){
       </div>
     </div>
 
+    <div class="card" style="margin-bottom:14px;">
+      <label style="margin-bottom:10px;">رمز حماية الأدمن (اختياري)</label>
+      <p class="muted" style="font-size:12px;margin-bottom:10px;">لو حددته، بيُطلب منك كل مرة تختار "أنت (الأدمن)" بشاشة اختيار المستخدم</p>
+      <input id="c-admin-pin" type="tel" inputmode="numeric" maxlength="6" placeholder="مثال: 1234" value="${c.admin_pin||''}">
+    </div>
+
     <button class="btn btn-primary btn-block" onclick="submitCompanyForm()">حفظ ومتابعة</button>
   </div>`;
 }
@@ -1127,6 +1160,8 @@ function selectTemplate(val){
 function submitCompanyForm(){
   const name = document.getElementById('c-name').value.trim();
   if(!name){ showToast("اسم المنشأة مطلوب"); return; }
+  const adminPin = document.getElementById('c-admin-pin').value.trim();
+  if(adminPin && !/^[0-9]{4,6}$/.test(adminPin)){ showToast("رمز الأدمن لازم يكون من 4 إلى 6 أرقام، أو اتركه فاضي"); return; }
   const form = {
     name,
     phone: document.getElementById('c-phone').value.trim(),
@@ -1135,6 +1170,7 @@ function submitCompanyForm(){
     tax_number: document.getElementById('c-tax').value.trim(),
     commercial_register: document.getElementById('c-cr').value.trim(),
     invoice_template: selectedTemplate || state.company?.invoice_template || 'classic',
+    admin_pin: adminPin || null,
   };
   saveCompany(form, pendingLogoFile);
   pendingLogoFile = null;
