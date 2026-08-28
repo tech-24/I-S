@@ -97,10 +97,9 @@ label{font-size:12.5px;color:var(--text-2);display:block;margin-bottom:6px;font-
 .contact-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
 #print-area{display:none;}
 @media print{
-  @page{ margin:0; }
   body *{visibility:hidden;}
   #print-area, #print-area *{visibility:visible;}
-  #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:3mm;font-size:11px;}
+  #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:1mm;font-size:11px;}
 }
 </style>
 </head>
@@ -428,8 +427,11 @@ async function saveCustomer(form){
   render();
 }
 async function deleteCustomer(id){
-  await sb.from('customers').delete().eq('id', id);
+  if(!confirm("هل تريد حذف هذا العميل نهائياً؟ لا يمكن التراجع عن هذا الإجراء")) return;
+  const { error } = await sb.from('customers').delete().eq('id', id);
+  if(error){ showToast("خطأ: "+error.message); return; }
   state.customers = state.customers.filter(c=>c.id!==id);
+  showToast("تم حذف العميل بنجاح");
   render();
 }
 
@@ -450,8 +452,11 @@ async function saveProduct(form){
   render();
 }
 async function deleteProduct(id){
-  await sb.from('products').delete().eq('id', id);
+  if(!confirm("هل تريد حذف هذا المنتج نهائياً؟ لا يمكن التراجع عن هذا الإجراء")) return;
+  const { error } = await sb.from('products').delete().eq('id', id);
+  if(error){ showToast("خطأ: "+error.message); return; }
   state.products = state.products.filter(p=>p.id!==id);
+  showToast("تم حذف المنتج بنجاح");
   render();
 }
 
@@ -556,7 +561,7 @@ function handleSearchEnter(){
     render();
     setTimeout(()=>document.getElementById('pos-search-input')?.focus(), 50);
   } else {
-    showToast("ما فيه منتج مطابق لهذا الباركود");
+    showToast("لا يوجد منتج مطابق لهذا الباركود");
   }
 }
 function changeQty(idx, delta){
@@ -786,14 +791,6 @@ async function openInvoice(invoiceId){
   state.view = "invoice_view";
   render();
 }
-async function setInvoiceStatus(newStatus){
-  const inv = state.lastInvoice;
-  await sb.from('invoices').update({status:newStatus}).eq('id', inv.id);
-  inv.status = newStatus;
-  state.invoices = state.invoices.map(i=>i.id===inv.id?{...i,status:newStatus}:i);
-  render();
-}
-
 /* ============ تعديل / حذف فاتورة ============ */
 function openEditInvoiceModal(invId){
   const inv = state.invoices.find(i=>i.id===invId);
@@ -922,13 +919,30 @@ function renderQrInto(containerId, inv, c, scopeEl){
 }
 
 /* ============ طباعة ============ */
+function waitForImagesThenPrint(area){
+  const imgs = Array.from(area.querySelectorAll('img'));
+  if(imgs.length===0){ window.print(); return; }
+  let remaining = imgs.length;
+  let done = false;
+  const finish = () => { if(!done){ done = true; window.print(); } };
+  imgs.forEach(img=>{
+    if(img.complete){
+      remaining--;
+    } else {
+      img.addEventListener('load', ()=>{ remaining--; if(remaining<=0) finish(); });
+      img.addEventListener('error', ()=>{ remaining--; if(remaining<=0) finish(); });
+    }
+  });
+  if(remaining<=0) finish();
+  setTimeout(finish, 2500); // شبكة السلامة لو الصورة تعلّقت لأي سبب
+}
 function printInvoice(){
   const inv = state.lastInvoice, c = state.company;
   const area = document.getElementById('print-area');
   area.className = '';
   area.innerHTML = invoiceReceiptHTML(inv, c);
   if(!inv._offlinePending){ renderQrInto(`qr-holder-${inv.id}`, inv, c, area); }
-  setTimeout(()=>window.print(), 150);
+  setTimeout(()=>waitForImagesThenPrint(area), 50);
 }
 
 function printSharedInvoice(){
@@ -938,7 +952,7 @@ function printSharedInvoice(){
   area.className = '';
   area.innerHTML = invoiceReceiptHTML(inv, c);
   renderQrInto(`qr-holder-${inv.id}`, inv, c, area);
-  setTimeout(()=>window.print(), 150);
+  setTimeout(()=>waitForImagesThenPrint(area), 50);
 }
 
 /* ============ مشاركة واتساب (مباشرة لمحادثة العميل) ============ */
@@ -1241,7 +1255,7 @@ function submitCompanyForm(){
   const name = document.getElementById('c-name').value.trim();
   if(!name){ showToast("اسم المنشأة مطلوب"); return; }
   const adminPin = document.getElementById('c-admin-pin').value.trim();
-  if(adminPin && !/^[0-9]{4,6}$/.test(adminPin)){ showToast("رمز الأدمن لازم يكون من 4 إلى 6 أرقام، أو اتركه فاضي"); return; }
+  if(adminPin && !/^[0-9]{4,6}$/.test(adminPin)){ showToast("يجب أن يتكون رمز الأدمن من 4 إلى 6 أرقام، أو اتركه فارغاً"); return; }
   const form = {
     name,
     phone: document.getElementById('c-phone').value.trim(),
@@ -1335,7 +1349,7 @@ function renderCheckoutModal(){
                   </div>
                 `).join('')}
               </div>
-            ` : `<p class="muted" style="font-size:12.5px;margin-top:6px;">ما فيه عميل مطابق، أدخل بياناته تحت كعميل جديد</p>`;
+            ` : `<p class="muted" style="font-size:12.5px;margin-top:6px;">لا يوجد عميل مطابق، يرجى إدخال بياناته أدناه كعميل جديد</p>`;
           })() : ''}
         `}
       </div>
@@ -1398,7 +1412,7 @@ function renderCheckoutModal(){
       ${state.checkout.payment==='cash' ? `
       <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
         <div class="field" style="margin-bottom:0;">
-          <label>المبلغ المستلم من العميل (اتركه فاضي لو المبلغ مضبوط)</label>
+          <label>المبلغ المستلم من العميل (اتركه فارغاً إذا كان المبلغ مطابقاً للإجمالي)</label>
           <input id="chk-amount-received" type="number" value="${state.checkout.amountReceived}" oninput="state.checkout.amountReceived=this.value;refreshCheckoutTotals();" placeholder="${money(total)}">
         </div>
         <div id="cash-feedback" style="margin-top:8px;"></div>
@@ -1628,7 +1642,7 @@ function renderInvoicesPage(){
 /* ============ إدارة الموظفين ============ */
 async function addStaffProfile(name, pin){
   if(!name || !name.trim()){ showToast("اسم الموظف مطلوب"); return; }
-  if(!pin || !/^[0-9]{4,6}$/.test(pin)){ showToast("الرمز لازم يكون من 4 إلى 6 أرقام"); return; }
+  if(!pin || !/^[0-9]{4,6}$/.test(pin)){ showToast("يجب أن يتكون الرمز من 4 إلى 6 أرقام"); return; }
   const { data, error } = await sb.from('staff_profiles').insert({ user_id: state.user.id, name: name.trim(), pin }).select().single();
   if(error){ showToast("خطأ: "+error.message); return; }
   state.staffProfiles = [data, ...state.staffProfiles];
@@ -1655,7 +1669,7 @@ function renderStaffManagement(){
       <div class="field"><label>الرمز (4-6 أرقام)</label><input id="new-staff-pin" type="tel" inputmode="numeric" maxlength="6" placeholder="1234"></div>
       <button class="btn btn-primary btn-block" onclick="addStaffProfile(document.getElementById('new-staff-name').value, document.getElementById('new-staff-pin').value); document.getElementById('new-staff-name').value=''; document.getElementById('new-staff-pin').value='';">${ICONS.plus} إضافة</button>
     </div>
-    ${state.staffProfiles.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">ما فيه موظفين مضافين بعد</p></div>` : `
+    ${state.staffProfiles.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">لم تتم إضافة أي موظفين بعد</p></div>` : `
     <div class="card">
       ${state.staffProfiles.map(p=>`
         <div class="list-row">
@@ -1734,7 +1748,7 @@ function renderCustomerDetail(){
       ${c.address ? `<div class="between" style="padding:6px 0;font-size:13px;"><span class="muted">العنوان</span><span>${c.address}</span></div>` : ''}
     </div>
     <p style="font-weight:700;font-size:14px;margin-bottom:10px;">الفواتير السابقة (${customerInvoices.length})</p>
-    ${customerInvoices.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">ما فيه فواتير لهذا العميل بعد</p></div>` :
+    ${customerInvoices.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">لا توجد فواتير لهذا العميل بعد</p></div>` :
       groups.map(g=>`
         <div class="day-header">${g.label}</div>
         <div class="card">
@@ -1766,7 +1780,7 @@ function renderCustomersPage(){
         <input id="customers-search-input" placeholder="ابحث بالاسم أو رقم الجوال..." value="${state.customersSearch||''}" oninput="state.customersSearch=this.value;render()" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
-    ${state.customers.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">لم تتم إضافة أي عملاء بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>ما فيه عميل مطابق</p></div>` : `
+    ${state.customers.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">لم تتم إضافة أي عملاء بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد عميل مطابق</p></div>` : `
     <div class="card">
       ${filtered.map(c=>`
         <div class="list-row" style="cursor:pointer;" onclick="openCustomerDetail('${c.id}')">
@@ -1840,7 +1854,7 @@ function renderProductsPage(){
         <input id="products-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.productsSearch||''}" oninput="state.productsSearch=this.value;render()" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
-    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>ما فيه منتج مطابق</p></div>` : `
+    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
     <div class="card">
       ${filtered.map(p=>`
         <div class="list-row">
