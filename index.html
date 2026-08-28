@@ -148,6 +148,7 @@ const state = {
   staffProfiles: [],
   categories: [],
   duplicateWarning: null,
+  deleteProductWarning: null,
   posActiveCategory: 'all',
   productsActiveCategory: 'all',
   viewingProductId: null,
@@ -482,8 +483,47 @@ async function saveProduct(form){
   showToast("تم حفظ بيانات المنتج بنجاح");
   render();
 }
-async function deleteProduct(id){
-  if(!confirm("هل تريد حذف هذا المنتج نهائياً؟ لا يمكن التراجع عن هذا الإجراء")) return;
+function deleteProduct(id){
+  const product = state.products.find(p=>p.id===id);
+  const hasExpenseHistory = (state.allStockMovements||[]).some(m=>m.product_id===id && m.added_cost_total);
+  if(!hasExpenseHistory){
+    if(!confirm("هل تريد حذف هذا المنتج نهائياً؟ لا يمكن التراجع عن هذا الإجراء")) return;
+    performProductDelete(id, false);
+    return;
+  }
+  state.deleteProductWarning = { productId: id, productName: product?.name || '' };
+  render();
+}
+function renderDeleteProductWarning(){
+  const w = state.deleteProductWarning;
+  if(!w) return '';
+  return `
+  <div class="modal-overlay">
+    <div class="modal-sheet" style="padding-bottom:24px;">
+      <div class="modal-title"><span>حذف المنتج</span><button onclick="state.deleteProductWarning=null;render()">${ICONS.x}</button></div>
+      <p class="muted" style="font-size:13px;margin-bottom:16px;">لهذا المنتج ("<bdi>${w.productName}</bdi>") سجل مصروفات محفوظ (من عمليات استلام بضاعة سابقة). كيف تحب تتعامل معه؟</p>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;color:var(--danger);" onclick="confirmDeleteWithExpenses()">حذف المنتج وسجل مصروفاته بالكامل</button>
+      <button class="btn btn-primary btn-block" onclick="confirmDeleteKeepExpenses()">حذف المنتج فقط، مع الإبقاء على سجل المصروفات</button>
+    </div>
+  </div>`;
+}
+function confirmDeleteWithExpenses(){
+  const id = state.deleteProductWarning.productId;
+  state.deleteProductWarning = null;
+  render();
+  if(!confirm("سيتم حذف جميع سجلات مصروفات هذا المنتج نهائياً، بما فيها سجلات الأشهر الماضية. هذا الإجراء لا يمكن التراجع عنه. هل تريد المتابعة؟")) return;
+  performProductDelete(id, true);
+}
+function confirmDeleteKeepExpenses(){
+  const id = state.deleteProductWarning.productId;
+  state.deleteProductWarning = null;
+  performProductDelete(id, false);
+}
+async function performProductDelete(id, deleteExpensesToo){
+  if(deleteExpensesToo){
+    await sb.from('stock_movements').delete().eq('product_id', id);
+    state.allStockMovements = (state.allStockMovements||[]).filter(m=>m.product_id!==id);
+  }
   const { error } = await sb.from('products').delete().eq('id', id);
   if(error){ showToast("خطأ: "+error.message); return; }
   state.products = state.products.filter(p=>p.id!==id);
@@ -2633,6 +2673,7 @@ function render(){
   if(state.modal==='edit_invoice') html += renderEditInvoiceModal();
   if(state.modal==='barcode_scan') html += renderBarcodeScanModal();
   if(state.duplicateWarning) html += renderDuplicateWarningModal();
+  if(state.deleteProductWarning) html += renderDeleteProductWarning();
   if(state.modal==='restock_product') html += renderRestockModal();
   if(state.modal==='manual_stock_update') html += renderManualUpdateModal();
   if(state.navMoreOpen) html += renderMoreSheet();
