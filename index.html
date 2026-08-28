@@ -95,14 +95,11 @@ label{font-size:12.5px;color:var(--text-2);display:block;margin-bottom:6px;font-
 .day-header{font-size:12.5px;font-weight:700;color:var(--text-2);margin:18px 0 8px;padding:0 2px;}
 .day-header:first-child{margin-top:0;}
 .contact-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
-.tpl-card{border:2px solid var(--border);border-radius:12px;padding:10px;text-align:center;cursor:pointer;}
-.tpl-card.active{border-color:var(--primary);background:var(--primary-light);}
 #print-area{display:none;}
 @media print{
   body *{visibility:hidden;}
   #print-area, #print-area *{visibility:visible;}
-  #print-area{display:block;position:absolute;top:0;left:0;width:80mm;padding:2mm;font-size:11px;}
-  #print-area.w58{width:58mm;font-size:9.5px;}
+  #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:1mm;font-size:11px;}
 }
 </style>
 </head>
@@ -138,8 +135,12 @@ const state = {
   editItem: null,
   lastInvoice: null,
   viewingHistorical: false,
+  invoiceReturnView: null,
   navMoreOpen: false,
   posSearch: "",
+  productsSearch: "",
+  customersSearch: "",
+  viewingCustomerId: null,
   invoicesSearch: "",
   invoicesRange: "week",
   invoiceDaysToggled: null,
@@ -440,11 +441,26 @@ function startBarcodeScanner(){
   }
   const el = document.getElementById('qr-reader');
   if(!el) return;
-  const scanner = new Html5Qrcode("qr-reader");
+  const formats = [
+    Html5QrcodeSupportedFormats.QR_CODE,
+    Html5QrcodeSupportedFormats.EAN_13,
+    Html5QrcodeSupportedFormats.EAN_8,
+    Html5QrcodeSupportedFormats.UPC_A,
+    Html5QrcodeSupportedFormats.UPC_E,
+    Html5QrcodeSupportedFormats.CODE_128,
+    Html5QrcodeSupportedFormats.CODE_39,
+    Html5QrcodeSupportedFormats.ITF,
+    Html5QrcodeSupportedFormats.CODABAR,
+  ];
+  const scanner = new Html5Qrcode("qr-reader", { formatsToSupport: formats, verbose: false });
   window._barcodeScanner = scanner;
   scanner.start(
     { facingMode: "environment" },
-    { fps: 10, qrbox: { width: 240, height: 160 } },
+    {
+      fps: 15,
+      qrbox: { width: 260, height: 130 },
+      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+    },
     (decodedText) => onBarcodeScanned(decodedText),
     () => {}
   ).catch(err=>{
@@ -496,6 +512,23 @@ function addProductToCart(product){
   if(existing){ existing.quantity += 1; existing.line_total = existing.quantity*existing.unit_price; }
   else state.cart.push({ product_id: product.id, description: product.name, quantity:1, unit_price: product.price, line_total: product.price });
   render();
+}
+function handleSearchEnter(){
+  const q = (state.posSearch||'').trim();
+  if(!q) return;
+  let product = state.products.find(p=>p.barcode && p.barcode===q);
+  if(!product){
+    const matches = state.products.filter(p=>p.name.includes(q) || (p.barcode||'').includes(q));
+    if(matches.length===1) product = matches[0];
+  }
+  if(product){
+    addProductToCart(product);
+    state.posSearch = '';
+    render();
+    setTimeout(()=>document.getElementById('pos-search-input')?.focus(), 50);
+  } else {
+    showToast("ما فيه منتج مطابق لهذا الباركود");
+  }
 }
 function changeQty(idx, delta){
   const item = state.cart[idx];
@@ -619,6 +652,7 @@ async function confirmInvoice(){
     state.customerSearchQuery = "";
     state.modal = null;
     state.viewingHistorical = false;
+    state.invoiceReturnView = null;
     state.view = "invoice_view";
   }
   function goOffline(customerId, customerLocalData, message){
@@ -702,6 +736,7 @@ async function openInvoice(invoiceId){
   const { data: items } = await sb.from('invoice_items').select('*').eq('invoice_id', invoiceId);
   state.lastInvoice = { ...inv, items, customer: inv.customers };
   state.viewingHistorical = true;
+  if(!state.invoiceReturnView) state.invoiceReturnView = state.view;
   state.view = "invoice_view";
   render();
 }
@@ -758,76 +793,54 @@ function contactIconLabel(type){
   return map[type]||type;
 }
 function invoiceReceiptHTML(inv, c){
-  const tpl = c?.invoice_template || 'classic';
-  const headerBg = tpl==='modern' ? '#4F46E5' : tpl==='classic' ? '#1F2937' : '#ffffff';
-  const headerColor = tpl==='simple' ? '#1F2937' : '#ffffff';
-  const accent = tpl==='modern' ? '#4F46E5' : '#1F2937';
-  const contacts = (c?.contact_accounts||[]).map(ca=>`<div style="margin-bottom:3px;"><bdi>${contactIconLabel(ca.type)}: ${ca.value}</bdi></div>`).join('');
+  const contacts = (c?.contact_accounts||[]).map(ca=>`<div style="margin-bottom:2px;"><bdi>${contactIconLabel(ca.type)}: ${ca.value}</bdi></div>`).join('');
   const customerName = inv.customer?.name ? `<bdi>${inv.customer.name}</bdi>` : 'بدون عميل';
   const customerPhone = inv.customer?.phone || inv.customer?.whatsapp || '';
   return `
-  <div dir="rtl" style="font-family:'Tajawal',sans-serif;direction:rtl;color:#1F2333;background:#fff;padding:22px 20px;width:100%;line-height:1.6;">
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;">
-      <div style="display:flex;gap:12px;align-items:center;">
-        ${c?.logo_url ? `<img src="${c.logo_url}" crossorigin="anonymous" style="width:56px;height:56px;border-radius:10px;object-fit:cover;">` : ''}
-        <div>
-          <div style="font-weight:700;font-size:17px;"><bdi>${c?.name||''}</bdi></div>
-          <div style="font-size:12px;color:#6B7280;margin-top:2px;"><bdi>${c?.address||''}</bdi></div>
-        </div>
-      </div>
-      <div style="text-align:left;">
-        <div style="font-weight:700;font-size:15px;">فاتورة مبسطة</div>
-        <div style="font-size:12.5px;color:#6B7280;margin-top:2px;">#${inv.invoice_number}</div>
-      </div>
+  <div dir="rtl" style="font-family:'Courier New',monospace;direction:rtl;color:#1F2333;background:#fff;padding:22px 20px;width:100%;line-height:1.6;">
+    <div style="text-align:center;margin-bottom:12px;">
+      ${c?.logo_url ? `<img src="${c.logo_url}" crossorigin="anonymous" style="width:64px;height:64px;border-radius:10px;object-fit:cover;margin-bottom:8px;">` : ''}
+      <div style="font-weight:700;font-size:16px;"><bdi>${c?.name||''}</bdi></div>
+      <div style="font-size:11.5px;color:#6B7280;margin-top:2px;"><bdi>${c?.address||''}</bdi></div>
+      ${c?.phone ? `<div style="font-size:11.5px;color:#6B7280;">${c.phone}</div>` : ''}
     </div>
 
-    <div style="display:flex;justify-content:space-between;font-size:12.5px;color:#6B7280;margin-bottom:14px;border-bottom:1px solid #E7E8F0;padding-bottom:14px;">
-      <div>
-        <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px;">العميل</div>
-        <div style="color:#1F2333;font-weight:500;font-size:13.5px;">${customerName}</div>
-        ${customerPhone ? `<div style="margin-top:2px;">${customerPhone}</div>` : ''}
-      </div>
-      <div style="text-align:left;">
-        <div style="font-size:11px;color:#9CA3AF;margin-bottom:3px;">التاريخ والوقت</div>
-        <div>${new Date(inv.created_at).toLocaleDateString('ar-SA')}</div>
-        <div style="margin-top:2px;">${new Date(inv.created_at).toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'})}</div>
-      </div>
+    <div style="border-top:1px dashed #999;border-bottom:1px dashed #999;padding:7px 0;margin-bottom:10px;font-size:12px;text-align:center;">
+      فاتورة مبسطة #${inv.invoice_number}<br>
+      ${new Date(inv.created_at).toLocaleDateString('ar-SA')} - ${new Date(inv.created_at).toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'})}
     </div>
 
-    <table dir="rtl" style="width:100%;border-collapse:collapse;font-size:12.5px;margin-bottom:16px;">
-      <thead>
-        <tr style="background:${headerBg};color:${headerColor};">
-          <th style="padding:10px 8px;text-align:right;font-weight:700;">المنتج</th>
-          <th style="padding:10px 8px;text-align:center;font-weight:700;">الكمية</th>
-          <th style="padding:10px 8px;text-align:center;font-weight:700;">السعر</th>
-          <th style="padding:10px 8px;text-align:left;font-weight:700;">الإجمالي</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${inv.items.map((i,idx)=>`
-          <tr style="border-bottom:1px solid #E7E8F0;background:${idx%2===1?'#F9FAFB':'#fff'};">
-            <td style="padding:10px 8px;"><bdi>${i.description}</bdi></td>
-            <td style="padding:10px 8px;text-align:center;">${i.quantity}</td>
-            <td style="padding:10px 8px;text-align:center;">${money(i.unit_price)}</td>
-            <td style="padding:10px 8px;text-align:left;">${money(i.line_total)}</td>
-          </tr>`).join('')}
-      </tbody>
-    </table>
-
-    <div style="font-size:13px;margin-bottom:18px;">
-      <div style="display:flex;justify-content:space-between;padding:5px 0;"><span>المجموع الفرعي</span><span>${money(inv.subtotal)}</span></div>
-      <div style="display:flex;justify-content:space-between;padding:5px 0;"><span>الخصم</span><span>${money(inv.discount)}</span></div>
-      <div style="display:flex;justify-content:space-between;padding:12px 0 4px;border-top:2px solid ${accent};margin-top:6px;font-weight:700;font-size:18px;"><span>الإجمالي</span><span>${money(inv.total)} ر.س</span></div>
+    <div style="font-size:12px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;"><span>العميل</span><span style="font-weight:700;">${customerName}</span></div>
+      ${customerPhone ? `<div style="display:flex;justify-content:space-between;margin-top:2px;"><span></span><span>${customerPhone}</span></div>` : ''}
     </div>
 
-    <div style="display:flex;justify-content:space-between;align-items:flex-end;font-size:11.5px;color:#6B7280;margin-top:10px;padding-top:14px;border-top:1px solid #E7E8F0;">
-      <div>
-        <div style="margin-bottom:3px;">طريقة الدفع: ${payLabel(inv.payment_method)}</div>
-        <div style="margin-bottom:8px;">الحالة: ${statusLabel(inv.status)}</div>
-        ${contacts}
-        <div style="margin-top:8px;">شكراً لتعاملكم معنا</div>
-      </div>
-      <div id="qr-holder-${inv.id}" style="width:60px;height:60px;flex-shrink:0;"></div>
+    <div style="font-size:12px;margin-bottom:8px;">
+      ${inv.items.map(i=>`
+        <div style="display:flex;justify-content:space-between;padding:3px 0;">
+          <span><bdi>${i.description}</bdi> × ${i.quantity}</span>
+          <span>${money(i.line_total)}</span>
+        </div>`).join('')}
+    </div>
+
+    <div style="border-top:1px dashed #999;padding-top:6px;font-size:12px;">
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>المجموع الفرعي</span><span>${money(inv.subtotal)}</span></div>
+      <div style="display:flex;justify-content:space-between;padding:3px 0;"><span>الخصم</span><span>${money(inv.discount)}</span></div>
+    </div>
+
+    <div style="border-top:1px solid #1F2333;margin-top:6px;padding-top:8px;display:flex;justify-content:space-between;font-weight:700;font-size:15px;">
+      <span>الإجمالي</span><span>${money(inv.total)} ر.س</span>
+    </div>
+
+    <div style="text-align:center;margin:16px 0;">
+      <div id="qr-holder-${inv.id}" style="width:72px;height:72px;margin:0 auto;"></div>
+    </div>
+
+    <div style="border-top:1px dashed #999;padding-top:10px;font-size:11px;color:#6B7280;text-align:center;">
+      <div style="margin-bottom:4px;">طريقة الدفع: ${payLabel(inv.payment_method)}</div>
+      <div style="margin-bottom:8px;">الحالة: ${statusLabel(inv.status)}</div>
+      <div style="line-height:1.5;">${contacts}</div>
+      <div style="margin-top:10px;">شكراً لتعاملكم معنا</div>
     </div>
   </div>`;
 }
@@ -883,7 +896,7 @@ async function shareWhatsapp(){
   }
 
   const custName = inv.customer?.name || '';
-  const greetingAr = custName ? `عزيزنا ${custName}،` : 'عزيزنا العميل،';
+  const greetingAr = custName ? `عزيزنا/عزيزتنا ${custName}،` : 'عزيزنا/عزيزتنا العميل/العميلة،';
   const text = `${greetingAr}\nشكراً لكم لتعاملكم مع "${companyName}".\nيمكنكم الاطلاع على فاتورتكم رقم ${inv.invoice_number} من الرابط التالي:\n${invoiceLink}`;
 
   let phone = inv.customer?.whatsapp || inv.customer?.phone || '';
@@ -1132,17 +1145,6 @@ function renderSetupCompany(){
     </div>
 
     <div class="card" style="margin-bottom:14px;">
-      <label style="margin-bottom:10px;">قالب الفاتورة</label>
-      <div class="grid2" style="grid-template-columns:repeat(3,1fr);">
-        ${[['classic','كلاسيكي'],['simple','بسيط'],['modern','عصري']].map(([val,label])=>`
-          <div class="tpl-card ${((c.invoice_template||'classic')===val)?'active':''}" onclick="selectTemplate('${val}')" id="tpl-${val}">
-            <div style="font-size:12.5px;font-weight:700;">${label}</div>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:14px;">
       <label style="margin-bottom:10px;">رمز حماية الأدمن (اختياري)</label>
       <p class="muted" style="font-size:12px;margin-bottom:10px;">لو حددته، بيُطلب منك كل مرة تختار "أنت (الأدمن)" بشاشة اختيار المستخدم</p>
       <input id="c-admin-pin" type="tel" inputmode="numeric" maxlength="6" placeholder="مثال: 1234" value="${c.admin_pin||''}">
@@ -1150,12 +1152,6 @@ function renderSetupCompany(){
 
     <button class="btn btn-primary btn-block" onclick="submitCompanyForm()">حفظ ومتابعة</button>
   </div>`;
-}
-let selectedTemplate = null;
-function selectTemplate(val){
-  selectedTemplate = val;
-  document.querySelectorAll('.tpl-card').forEach(el=>el.classList.remove('active'));
-  document.getElementById('tpl-'+val).classList.add('active');
 }
 function submitCompanyForm(){
   const name = document.getElementById('c-name').value.trim();
@@ -1169,7 +1165,6 @@ function submitCompanyForm(){
     address: document.getElementById('c-address').value.trim(),
     tax_number: document.getElementById('c-tax').value.trim(),
     commercial_register: document.getElementById('c-cr').value.trim(),
-    invoice_template: selectedTemplate || state.company?.invoice_template || 'classic',
     admin_pin: adminPin || null,
   };
   saveCompany(form, pendingLogoFile);
@@ -1178,7 +1173,7 @@ function submitCompanyForm(){
 
 function renderPOS(){
   const total = cartSubtotal();
-  const filtered = state.posSearch ? state.products.filter(p=>p.name.includes(state.posSearch)) : state.products;
+  const filtered = state.posSearch ? state.products.filter(p=>p.name.includes(state.posSearch) || (p.barcode||'').includes(state.posSearch)) : state.products;
   return `
   <div class="topbar">
     <h1>البيع السريع</h1>
@@ -1190,7 +1185,7 @@ function renderPOS(){
   <div class="page">
     ${state.products.length>0 ? `
       <div style="position:relative;margin-bottom:12px;">
-        <input placeholder="ابحث عن منتج..." value="${state.posSearch}" oninput="state.posSearch=this.value;render()" style="padding-left:34px;">
+        <input id="pos-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.posSearch}" oninput="state.posSearch=this.value;render()" onkeydown="if(event.key==='Enter'){event.preventDefault();handleSearchEnter();}" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
     ${state.products.length===0 ? `
@@ -1368,7 +1363,7 @@ function renderInvoiceView(){
     </div>
     <div class="between" style="margin-bottom:14px;">
       <span class="pill" style="background:${sbg};color:${sfg};">${statusLabel(inv.status)}</span>
-      ${!inv._offlinePending ? `
+      ${!inv._offlinePending && !isStaff() ? `
       <div style="display:flex;gap:8px;">
         <button class="btn-sm btn-outline btn" onclick="openEditInvoiceModal('${inv.id}')">${ICONS.edit} تعديل</button>
         <button class="btn-sm btn-outline btn" style="color:var(--danger);" onclick="deleteInvoiceConfirm('${inv.id}')">${ICONS.trash} حذف</button>
@@ -1382,8 +1377,13 @@ function renderInvoiceView(){
 }
 function handleInvoiceBack(){
   if(!state.viewingHistorical){ state.cart=[]; }
-  state.view = state.viewingHistorical ? 'invoices_page' : 'pos';
+  if(state.viewingHistorical){
+    state.view = state.invoiceReturnView || (isStaff() ? 'staff_brief' : 'invoices_page');
+  } else {
+    state.view = 'pos';
+  }
   state.viewingHistorical = false;
+  state.invoiceReturnView = null;
   render();
 }
 
@@ -1450,7 +1450,7 @@ function renderInvoicesPage(){
       `).join('')}
     </div>` : ''}
     <div style="position:relative;margin-bottom:10px;">
-      <input placeholder="ابحث باسم العميل أو رقم الفاتورة..." value="${state.invoicesSearch||''}" oninput="state.invoicesSearch=this.value;render()" style="padding-left:34px;">
+      <input id="invoices-search-input" placeholder="ابحث باسم العميل أو رقم الفاتورة..." value="${state.invoicesSearch||''}" oninput="state.invoicesSearch=this.value;render()" style="padding-left:34px;">
       <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
     </div>
     <div class="tabbar" style="margin-bottom:14px;">
@@ -1561,19 +1561,85 @@ function renderStaffBrief(){
       <p style="font-weight:700;font-size:14px;margin-bottom:12px;">التقسيم حسب طريقة الدفع</p>
       <div class="between" style="font-size:13px;padding:5px 0;"><span>نقدي</span><span>${money(byPayment.cash||0)}</span></div>
       <div class="between" style="font-size:13px;padding:5px 0;"><span>شبكة</span><span>${money(byPayment.card||0)}</span></div>
-      <div class="between" style="font-size:13px;padding:5px 0;"><span>تحويل</span><span>${money(byPayment.transfer||0)}</span></div>
+      <div class="between" style="font-size:13px;padding:5px 0;margin-bottom:14px;"><span>تحويل</span><span>${money(byPayment.transfer||0)}</span></div>
+      <button class="btn btn-outline btn-block" onclick="printDailyBrief()">${ICONS.print} طباعة الملخص</button>
     </div>
+
+    ${todayInvoices.length>0 ? `
+    <div class="card" style="margin-top:14px;">
+      <p style="font-weight:700;font-size:14px;margin-bottom:10px;">فواتير اليوم</p>
+      ${todayInvoices.map(inv=>`
+        <div class="list-row" style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
+          <div>
+            <div style="font-weight:500;font-size:13px;">${inv.customers?.name || 'بدون عميل'}</div>
+            <div class="muted" style="font-size:11px;">#${inv.invoice_number}</div>
+          </div>
+          <div style="font-weight:700;">${money(inv.total)} ر.س</div>
+        </div>
+      `).join('')}
+    </div>` : ''}
+  </div>`;
+}
+
+function openCustomerDetail(customerId){
+  state.viewingCustomerId = customerId;
+  state.view = 'customer_detail';
+  render();
+}
+function renderCustomerDetail(){
+  const c = state.customers.find(x=>x.id===state.viewingCustomerId);
+  if(!c) return renderCustomersPage();
+  const customerInvoices = state.invoices.filter(i=>i.customer_id===c.id);
+  const groups = groupInvoicesByDay(customerInvoices);
+  return `
+  <div class="topbar">
+    <button onclick="state.view='customers_page';render()">${ICONS.back}</button>
+    <h1>${c.name}</h1>
+    <div style="width:20px;"></div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-bottom:14px;">
+      ${c.phone||c.whatsapp ? `<div class="between" style="padding:6px 0;font-size:13px;"><span class="muted">الجوال</span><span>${c.phone||c.whatsapp}</span></div>` : ''}
+      ${c.email ? `<div class="between" style="padding:6px 0;font-size:13px;"><span class="muted">البريد</span><span>${c.email}</span></div>` : ''}
+      ${c.address ? `<div class="between" style="padding:6px 0;font-size:13px;"><span class="muted">العنوان</span><span>${c.address}</span></div>` : ''}
+    </div>
+    <p style="font-weight:700;font-size:14px;margin-bottom:10px;">الفواتير السابقة (${customerInvoices.length})</p>
+    ${customerInvoices.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">ما فيه فواتير لهذا العميل بعد</p></div>` :
+      groups.map(g=>`
+        <div class="day-header">${g.label}</div>
+        <div class="card">
+          ${g.invoices.map(inv=>`
+            <div class="list-row" style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
+              <div>
+                <div style="font-weight:500;font-size:13.5px;">#${inv.invoice_number}</div>
+                <div class="muted" style="font-size:11.5px;">${new Date(inv.created_at).toLocaleTimeString('ar-SA',{hour:'2-digit',minute:'2-digit'})}</div>
+              </div>
+              <div style="text-align:left;">
+                <div style="font-weight:700;">${money(inv.total)} ر.س</div>
+                <div class="muted" style="font-size:10.5px;">${statusLabel(inv.status)}</div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      `).join('')
+    }
   </div>`;
 }
 
 function renderCustomersPage(){
+  const filtered = state.customersSearch ? state.customers.filter(c=>c.name.includes(state.customersSearch) || (c.phone||'').includes(state.customersSearch) || (c.whatsapp||'').includes(state.customersSearch)) : state.customers;
   return `
   <div class="topbar"><h1>العملاء</h1><button class="btn btn-primary btn-sm" onclick="state.editItem=null;openModal('add_customer')">${ICONS.plus} إضافة</button></div>
   <div class="page">
-    ${state.customers.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">لم تتم إضافة أي عملاء بعد</p></div>` : `
+    ${state.customers.length>0 ? `
+      <div style="position:relative;margin-bottom:12px;">
+        <input id="customers-search-input" placeholder="ابحث بالاسم أو رقم الجوال..." value="${state.customersSearch||''}" oninput="state.customersSearch=this.value;render()" style="padding-left:34px;">
+        <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
+      </div>` : ''}
+    ${state.customers.length===0 ? `<div class="empty">${ICONS.user}<p style="margin-top:8px;">لم تتم إضافة أي عملاء بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>ما فيه عميل مطابق</p></div>` : `
     <div class="card">
-      ${state.customers.map(c=>`
-        <div class="list-row">
+      ${filtered.map(c=>`
+        <div class="list-row" style="cursor:pointer;" onclick="openCustomerDetail('${c.id}')">
           <div style="display:flex;gap:10px;align-items:center;">
             <div class="avatar">${c.name.slice(0,1)}</div>
             <div>
@@ -1582,8 +1648,8 @@ function renderCustomersPage(){
             </div>
           </div>
           <div style="display:flex;gap:14px;">
-            <button onclick='state.editItem=${JSON.stringify(c).replace(/'/g,"&apos;")};openModal("add_customer")'>${ICONS.edit}</button>
-            <button onclick="deleteCustomer('${c.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+            <button onclick='event.stopPropagation();state.editItem=${JSON.stringify(c).replace(/'/g,"&apos;")};openModal("add_customer")'>${ICONS.edit}</button>
+            <button onclick="event.stopPropagation();deleteCustomer('${c.id}')" style="color:var(--danger);">${ICONS.trash}</button>
           </div>
         </div>
       `).join('')}
@@ -1597,7 +1663,7 @@ function renderBarcodeScanModal(){
     <div class="modal-sheet" style="padding-bottom:24px;">
       <div class="modal-title"><span>مسح الباركود</span><button onclick="closeBarcodeScanner(true)">${ICONS.x}</button></div>
       <div id="qr-reader" style="width:100%;border-radius:12px;overflow:hidden;background:#000;min-height:220px;"></div>
-      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:12px;">وجّه الكاميرا نحو الباركود</p>
+      <p class="muted" style="text-align:center;font-size:12.5px;margin-top:12px;">قرّب الباركود من الكاميرا، وحاذِ الخطوط أفقياً داخل الإطار، بإضاءة جيدة</p>
       <button class="btn btn-outline btn-block" style="margin-top:10px;" onclick="closeBarcodeScanner(true)">إلغاء</button>
     </div>
   </div>`;
@@ -1631,6 +1697,7 @@ function submitCustomerForm(){
 }
 
 function renderProductsPage(){
+  const filtered = state.productsSearch ? state.products.filter(p=>p.name.includes(state.productsSearch) || (p.barcode||'').includes(state.productsSearch)) : state.products;
   return `
   <div class="topbar">
     <button onclick="state.view='pos';render()">${ICONS.back}</button>
@@ -1638,9 +1705,14 @@ function renderProductsPage(){
     <button class="btn btn-primary btn-sm" onclick="state.editItem=null;openModal('add_product')">${ICONS.plus}</button>
   </div>
   <div class="page">
-    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : `
+    ${state.products.length>0 ? `
+      <div style="position:relative;margin-bottom:12px;">
+        <input id="products-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.productsSearch||''}" oninput="state.productsSearch=this.value;render()" style="padding-left:34px;">
+        <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
+      </div>` : ''}
+    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>ما فيه منتج مطابق</p></div>` : `
     <div class="card">
-      ${state.products.map(p=>`
+      ${filtered.map(p=>`
         <div class="list-row">
           <div>
             <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
@@ -1705,8 +1777,8 @@ function renderDashboard(){
     </div>
     ${state.dashRange==='custom' ? `
       <div style="display:flex;gap:8px;margin-bottom:14px;">
-        <input type="date" value="${state.dashFrom}" onchange="state.dashFrom=this.value;render()">
-        <input type="date" value="${state.dashTo}" onchange="state.dashTo=this.value;render()">
+        <input id="dash-from-input" type="date" value="${state.dashFrom}" onchange="state.dashFrom=this.value;render()">
+        <input id="dash-to-input" type="date" value="${state.dashTo}" onchange="state.dashTo=this.value;render()">
       </div>` : ''}
 
     <div class="grid2" style="margin-bottom:12px;">
@@ -1910,6 +1982,7 @@ function render(){
     case 'invoice_view': html = renderInvoiceView(); break;
     case 'invoices_page': html = renderInvoicesPage(); break;
     case 'customers_page': html = renderCustomersPage(); break;
+    case 'customer_detail': html = renderCustomerDetail(); break;
     case 'products_page': html = renderProductsPage(); break;
     case 'dashboard': html = renderDashboard(); break;
     default: html = renderPOS();
