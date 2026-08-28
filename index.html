@@ -145,6 +145,14 @@ const state = {
   invoicesRange: "week",
   invoiceDaysToggled: null,
   staffProfiles: [],
+  categories: [],
+  duplicateWarning: null,
+  posActiveCategory: 'all',
+  viewingProductId: null,
+  stockMovements: [],
+  restockDraft: { movementType: 'purchase', qty: '', cost: '' },
+  manualUpdateDraft: { remaining: '', damaged: '0', newQty: '', newCost: '' },
+  allStockMovements: [],
   activeProfile: null,
   pinAttemptProfile: null,
   pinAttemptError: "",
@@ -239,12 +247,14 @@ function postLoginView(){
 
 async function loadAllData(){
   const uid = state.user.id;
-  const [company, customers, products, invoices, staff] = await Promise.all([
+  const [company, customers, products, invoices, staff, categories, allMovements] = await Promise.all([
     sb.from('company_settings').select('*').eq('user_id', uid).maybeSingle(),
     sb.from('customers').select('*').eq('user_id', uid).order('created_at',{ascending:false}),
     sb.from('products').select('*').eq('user_id', uid).order('created_at',{ascending:false}),
     sb.from('invoices').select('*, customers(name)').eq('user_id', uid).order('created_at',{ascending:false}).limit(300),
-    sb.from('staff_profiles').select('*').eq('user_id', uid).order('created_at',{ascending:false})
+    sb.from('staff_profiles').select('*').eq('user_id', uid).order('created_at',{ascending:false}),
+    sb.from('product_categories').select('*').eq('user_id', uid).order('sort_order',{ascending:true}),
+    sb.from('stock_movements').select('*').eq('user_id', uid).order('created_at',{ascending:false}).limit(1000)
   ]);
   if(company.error || customers.error || products.error || invoices.error){
     throw new Error('تعذّر الاتصال بقاعدة البيانات');
@@ -254,6 +264,8 @@ async function loadAllData(){
   state.products = products.data || [];
   state.invoices = invoices.data || [];
   state.staffProfiles = staff.data || [];
+  state.categories = categories.data || [];
+  state.allStockMovements = allMovements.data || [];
 }
 
 async function initApp(){
@@ -439,15 +451,24 @@ async function deleteCustomer(id){
 async function saveProduct(form){
   const payload = { ...form, price: parseFloat(form.price)||0, user_id: state.user.id };
   let res;
+  const isNew = !state.editItem;
   if(state.editItem){
     res = await sb.from('products').update(payload).eq('id', state.editItem.id).select().single();
   } else {
     res = await sb.from('products').insert(payload).select().single();
   }
   if(res.error){ showToast("خطأ: " + res.error.message); return; }
+  if(isNew && payload.tracking_type === 'auto' && parseFloat(payload.stock_quantity) > 0){
+    await sb.from('stock_movements').insert({
+      user_id: state.user.id, product_id: res.data.id, movement_type: 'purchase',
+      previous_quantity: 0, damaged_quantity: 0,
+      added_quantity: payload.stock_quantity, added_cost_total: payload.cost_price ? payload.cost_price * payload.stock_quantity : null,
+      new_quantity: payload.stock_quantity
+    });
+  }
   if(state.editItem) state.products = state.products.map(p=>p.id===res.data.id?res.data:p);
   else state.products = [res.data, ...state.products];
-  state.modal = null; state.editItem = null; state.pendingBarcode = '';
+  state.modal = null; state.editItem = null; state.pendingBarcode = ''; state.duplicateWarning = null;
   showToast("تم حفظ بيانات المنتج بنجاح");
   render();
 }
@@ -655,6 +676,7 @@ async function trySyncOfflineQueue(){
       if(invErr) continue;
       const itemsPayload = rec.items.map(i=>({ ...i, invoice_id: inv.id }));
       await sb.from('invoice_items').insert(itemsPayload);
+      await applyStockDeductions(rec.items);
       rec.synced = true;
       const customer = state.customers.find(c=>c.id===customerId);
       state.invoices = [{ ...inv, customers: customer?{name:customer.name}:null }, ...state.invoices];
@@ -667,6 +689,24 @@ async function trySyncOfflineQueue(){
 }
 window.addEventListener('online', ()=>trySyncOfflineQueue());
 setInterval(()=>trySyncOfflineQueue(), 30000);
+
+async function applyStockDeductions(cartItems){
+  for(const item of cartItems){
+    if(!item.product_id) continue;
+    const product = state.products.find(p=>p.id===item.product_id);
+    if(!product) continue;
+    if(product.tracking_type === 'auto'){
+      const newQty = (parseFloat(product.stock_quantity)||0) - item.quantity;
+      const { error } = await sb.from('products').update({ stock_quantity: newQty }).eq('id', product.id);
+      if(!error){ product.stock_quantity = newQty; }
+    } else if(product.tracking_type === 'none'){
+      const newSold = (parseFloat(product.total_sold)||0) + item.quantity;
+      const { error } = await sb.from('products').update({ total_sold: newSold }).eq('id', product.id);
+      if(!error){ product.total_sold = newSold; }
+    }
+  }
+  state.products = [...state.products];
+}
 
 async function confirmInvoice(){
   if(state.checkoutLoading) return;
@@ -771,6 +811,7 @@ async function confirmInvoice(){
 
     const itemsWithInvoiceId = items.map(i=>({ ...i, invoice_id: inv.id }));
     await sb.from('invoice_items').insert(itemsWithInvoiceId);
+    await applyStockDeductions(items);
 
     const customer = state.customers.find(c=>c.id===customerId);
     state.lastInvoice = { ...inv, items, customer: customer||null };
@@ -1040,9 +1081,13 @@ function computeDashboard(){
   const unpaidAll = state.invoices.filter(i=>i.status==='unpaid' || i.status==='partial');
   const unpaidTotal = unpaidAll.reduce((s,i)=>s + (i.status==='partial' ? parseFloat(i.remaining_amount||0) : parseFloat(i.total)),0);
 
+  const movementsInRange = (state.allStockMovements||[]).filter(m=>{ const d=isoDay(m.created_at); return d>=from && d<=to && m.added_cost_total; });
+  const totalExpenses = movementsInRange.reduce((s,m)=>s+parseFloat(m.added_cost_total||0),0);
+  const netEstimate = totalSales - totalExpenses;
+
   return { totalSales, collected, receivable, countInRange: inRange.length, dayList, dailyTotals, customersCount: state.customers.length,
            todaySales: todayInvoices.reduce((s,i)=>s+parseFloat(i.total),0), todayCount: todayInvoices.length, byPayment,
-           unpaidAll, unpaidTotal, unpaidCount: unpaidAll.length };
+           unpaidAll, unpaidTotal, unpaidCount: unpaidAll.length, totalExpenses, netEstimate };
 }
 
 /* ============ الواجهات ============ */
@@ -1271,7 +1316,9 @@ function submitCompanyForm(){
 
 function renderPOS(){
   const total = cartSubtotal();
-  const filtered = state.posSearch ? state.products.filter(p=>p.name.includes(state.posSearch) || (p.barcode||'').includes(state.posSearch)) : state.products;
+  const sellable = state.products.filter(p=>p.tracking_type !== 'manual');
+  const byCategory = state.posActiveCategory==='all' ? sellable : (state.posActiveCategory==='none' ? sellable.filter(p=>!p.category_id) : sellable.filter(p=>p.category_id===state.posActiveCategory));
+  const filtered = state.posSearch ? byCategory.filter(p=>p.name.includes(state.posSearch) || (p.barcode||'').includes(state.posSearch)) : byCategory;
   return `
   <div class="topbar">
     <h1>البيع السريع</h1>
@@ -1281,12 +1328,17 @@ function renderPOS(){
     </div>
   </div>
   <div class="page">
-    ${state.products.length>0 ? `
+    ${sellable.length>0 ? `
       <div style="position:relative;margin-bottom:12px;">
         <input id="pos-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.posSearch}" oninput="state.posSearch=this.value;render()" onkeydown="if(event.key==='Enter'){event.preventDefault();handleSearchEnter();}" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
-    ${state.products.length===0 ? `
+    ${state.categories.length>0 && sellable.length>0 ? `
+      <div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;">
+        <button class="btn btn-sm ${state.posActiveCategory==='all'?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.posActiveCategory='all';render()">الكل</button>
+        ${state.categories.map(c=>`<button class="btn btn-sm ${state.posActiveCategory===c.id?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.posActiveCategory='${c.id}';render()">${c.name}</button>`).join('')}
+      </div>` : ''}
+    ${sellable.length===0 ? `
       <div class="empty">
         ${ICONS.box}
         <p style="margin-top:10px;">لم تتم إضافة أي منتجات بعد</p>
@@ -1298,6 +1350,7 @@ function renderPOS(){
           <button class="prod-card" onclick='addProductToCart(${JSON.stringify(p).replace(/'/g,"&apos;")})'>
             <div style="font-weight:700;font-size:13.5px;margin-bottom:4px;">${p.name}</div>
             <div class="muted" style="font-size:12px;">${money(p.price)} ر.س</div>
+            ${p.tracking_type==='auto' ? `<div class="muted" style="font-size:10.5px;margin-top:2px;">متوفر: ${p.stock_quantity ?? 0}</div>` : ''}
           </button>
         `).join('')}
       </div>
@@ -1655,6 +1708,52 @@ async function deleteStaffProfile(id){
   state.staffProfiles = state.staffProfiles.filter(p=>p.id!==id);
   render();
 }
+/* ============ الفئات ============ */
+async function addCategory(name){
+  if(!name || !name.trim()){ showToast("اسم الفئة مطلوب"); return; }
+  const sortOrder = state.categories.length;
+  const { data, error } = await sb.from('product_categories').insert({ user_id: state.user.id, name: name.trim(), sort_order: sortOrder }).select().single();
+  if(error){ showToast("خطأ: "+error.message); return; }
+  state.categories = [...state.categories, data];
+  showToast("تمت إضافة الفئة بنجاح");
+  render();
+}
+async function deleteCategory(id){
+  if(!confirm("هل تريد حذف هذه الفئة؟ المنتجات التابعة لها تصير بدون فئة")) return;
+  await sb.from('products').update({category_id:null}).eq('category_id', id);
+  await sb.from('product_categories').delete().eq('id', id);
+  state.categories = state.categories.filter(c=>c.id!==id);
+  state.products = state.products.map(p=>p.category_id===id?{...p,category_id:null}:p);
+  showToast("تم حذف الفئة بنجاح");
+  render();
+}
+function renderCategoryManagement(){
+  return `
+  <div class="topbar">
+    <button onclick="state.view='pos';render()">${ICONS.back}</button>
+    <h1>إدارة الفئات</h1>
+    <div style="width:20px;"></div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-bottom:14px;">
+      <p style="font-weight:700;font-size:14px;margin-bottom:12px;">إضافة فئة جديدة</p>
+      <div style="display:flex;gap:8px;">
+        <input id="new-category-name" placeholder="اسم الفئة" style="flex:1;">
+        <button class="btn btn-primary" style="width:44px;padding:0;" onclick="addCategory(document.getElementById('new-category-name').value); document.getElementById('new-category-name').value='';">${ICONS.plus}</button>
+      </div>
+    </div>
+    ${state.categories.length===0 ? `<div class="empty">${ICONS.list}<p style="margin-top:8px;">لم تتم إضافة أي فئات بعد</p></div>` : `
+    <div class="card">
+      ${state.categories.map(c=>`
+        <div class="list-row">
+          <div style="font-weight:500;font-size:13.5px;">${c.name}</div>
+          <button onclick="deleteCategory('${c.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+        </div>
+      `).join('')}
+    </div>`}
+  </div>`;
+}
+
 function renderStaffManagement(){
   return `
   <div class="topbar">
@@ -1801,6 +1900,30 @@ function renderCustomersPage(){
   </div>`;
 }
 
+function renderDuplicateWarningModal(){
+  const d = state.duplicateWarning;
+  if(!d) return '';
+  return `
+  <div class="modal-overlay">
+    <div class="modal-sheet" style="padding-bottom:24px;">
+      <div class="modal-title"><span>هذا المنتج موجود مسبقاً</span><button onclick="state.duplicateWarning=null;render()">${ICONS.x}</button></div>
+      <p class="muted" style="font-size:13px;margin-bottom:16px;">يوجد منتج باسم "<bdi>${d.existing.name}</bdi>"${d.forceAllowed?'':' بنفس الباركود'} مسجّل مسبقاً.</p>
+      <button class="btn btn-primary btn-block" style="margin-bottom:10px;" onclick="confirmDuplicateMerge()">دمج معه (تعديل المنتج الموجود)</button>
+      ${d.forceAllowed ? `<button class="btn btn-outline btn-block" onclick="confirmDuplicateCreateAnyway()">إنشاء منتج منفصل رغم ذلك</button>` : `<button class="btn btn-outline btn-block" onclick="state.duplicateWarning=null;render()">إلغاء وتعديل الباركود</button>`}
+    </div>
+  </div>`;
+}
+function confirmDuplicateMerge(){
+  state.editItem = state.duplicateWarning.existing;
+  state.duplicateWarning = null;
+  draftTrackingType = null;
+  render();
+}
+function confirmDuplicateCreateAnyway(){
+  state.duplicateWarning = null;
+  submitProductForm(true);
+}
+
 function renderBarcodeScanModal(){
   return `
   <div class="modal-overlay">
@@ -1840,6 +1963,166 @@ function submitCustomerForm(){
   });
 }
 
+/* ============ تفاصيل المنتج وحركة المخزون ============ */
+async function openProductDetail(productId){
+  state.viewingProductId = productId;
+  state.view = 'product_detail';
+  render();
+  const { data } = await sb.from('stock_movements').select('*').eq('product_id', productId).order('created_at',{ascending:false});
+  state.stockMovements = data || [];
+  render();
+}
+function movementTypeLabel(t){ return t==='purchase'?'استلام بضاعة':t==='production'?'إنتاج':'تحديث يدوي'; }
+
+function renderProductDetail(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  if(!p) return renderProductsPage();
+  return `
+  <div class="topbar">
+    <button onclick="state.view='products_page';render()">${ICONS.back}</button>
+    <h1>${p.name}</h1>
+    <div style="width:20px;"></div>
+  </div>
+  <div class="page">
+    <div class="card" style="margin-bottom:14px;">
+      <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">السعر</span><span style="font-weight:700;">${money(p.price)} ر.س</span></div>
+      ${p.category_id ? `<div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الفئة</span><span>${state.categories.find(c=>c.id===p.category_id)?.name||''}</span></div>` : ''}
+      ${p.barcode ? `<div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الباركود</span><span>${p.barcode}</span></div>` : ''}
+
+      ${p.tracking_type==='auto' ? `
+        <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الكمية الحالية</span><span style="font-weight:700;">${p.stock_quantity ?? 0} ${p.unit||''}</span></div>
+        <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">آخر سعر شراء</span><span>${money(p.cost_price||0)}</span></div>
+        ${p.low_stock_threshold!=null ? `<div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">حد التنبيه</span><span>${p.low_stock_threshold}</span></div>` : ''}
+        ${p.low_stock_threshold!=null && (p.stock_quantity??0) <= p.low_stock_threshold ? `<div class="pill" style="background:var(--warn-bg);color:var(--warn);margin-top:8px;">⚠️ قارب على النفاد</div>` : ''}
+      ` : ''}
+
+      ${p.tracking_type==='manual' ? `
+        <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الرصيد الحالي</span><span style="font-weight:700;">${p.stock_quantity ?? 0} ${p.unit||''}</span></div>
+      ` : ''}
+
+      ${p.tracking_type==='none' ? `
+        <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">إجمالي الكمية المباعة</span><span style="font-weight:700;">${p.total_sold ?? 0}</span></div>
+      ` : ''}
+    </div>
+
+    ${p.tracking_type==='auto' ? `<button class="btn btn-primary btn-block" style="margin-bottom:14px;" onclick="openRestockModal()">${ICONS.plus} تعبئة مخزون</button>` : ''}
+    ${p.tracking_type==='manual' ? `<button class="btn btn-primary btn-block" style="margin-bottom:14px;" onclick="openManualUpdateModal()">${ICONS.edit} تحديث الرصيد</button>` : ''}
+
+    ${p.tracking_type!=='none' ? `
+    <div class="between" style="margin-bottom:10px;">
+      <p style="font-weight:700;font-size:14px;">سجل الحركة</p>
+      ${state.stockMovements.length>0 ? `<button class="btn btn-sm btn-outline" onclick="printStockHistory()">${ICONS.print} طباعة</button>` : ''}
+    </div>
+    ${state.stockMovements.length===0 ? `<div class="empty"><p>لا يوجد سجل حركة بعد</p></div>` : `
+    <div class="card">
+      ${state.stockMovements.map(m=>`
+        <div class="list-row">
+          <div>
+            <div style="font-weight:500;font-size:13px;">${movementTypeLabel(m.movement_type)}</div>
+            <div class="muted" style="font-size:11px;">${new Date(m.created_at).toLocaleDateString('ar-SA')}</div>
+          </div>
+          <div style="text-align:left;font-size:12px;">
+            <div>السابق: ${m.previous_quantity ?? '-'} → الجديد: ${m.new_quantity}</div>
+            ${m.damaged_quantity ? `<div class="muted">توالف: ${m.damaged_quantity}</div>` : ''}
+            ${m.added_cost_total ? `<div class="muted">التكلفة: ${money(m.added_cost_total)}</div>` : ''}
+          </div>
+        </div>
+      `).join('')}
+    </div>`}
+    ` : ''}
+  </div>`;
+}
+
+function openRestockModal(){
+  state.restockDraft = { movementType: 'purchase', qty: '', cost: '' };
+  state.modal = 'restock_product';
+  render();
+}
+function renderRestockModal(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  const d = state.restockDraft;
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
+    <div class="modal-sheet">
+      <div class="modal-title"><span>تعبئة مخزون: ${p.name}</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
+      <label style="margin-bottom:8px;">طريقة الإضافة</label>
+      <div class="grid2" style="margin-bottom:14px;">
+        <button class="btn ${d.movementType==='purchase'?'btn-primary':'btn-outline'}" onclick="state.restockDraft.movementType='purchase';render()">استلام بضاعة</button>
+        <button class="btn ${d.movementType==='production'?'btn-primary':'btn-outline'}" onclick="state.restockDraft.movementType='production';render()">إنتاج</button>
+      </div>
+      <div class="field"><label>الكمية الجديدة</label><input id="restock-qty" type="number" value="${d.qty}" oninput="state.restockDraft.qty=this.value"></div>
+      ${d.movementType==='purchase' ? `<div class="field"><label>سعر الشراء الإجمالي</label><input id="restock-cost" type="number" value="${d.cost}" oninput="state.restockDraft.cost=this.value"></div>` : ''}
+      <button class="btn btn-primary btn-block" onclick="submitRestock()">حفظ</button>
+    </div>
+  </div>`;
+}
+async function submitRestock(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  const qty = parseFloat(document.getElementById('restock-qty').value);
+  if(!qty || qty<=0){ showToast("أدخل كمية صحيحة"); return; }
+  const isPurchase = state.restockDraft.movementType === 'purchase';
+  const totalCost = isPurchase ? (parseFloat(document.getElementById('restock-cost').value)||0) : 0;
+  const previous = parseFloat(p.stock_quantity)||0;
+  const newQty = previous + qty;
+  const newCostPerUnit = isPurchase && qty>0 ? Math.round((totalCost/qty)*100)/100 : p.cost_price;
+
+  const updatePayload = { stock_quantity: newQty };
+  if(isPurchase) updatePayload.cost_price = newCostPerUnit;
+  const { error } = await sb.from('products').update(updatePayload).eq('id', p.id);
+  if(error){ showToast("خطأ: "+error.message); return; }
+  await sb.from('stock_movements').insert({
+    user_id: state.user.id, product_id: p.id, movement_type: state.restockDraft.movementType,
+    previous_quantity: previous, damaged_quantity: 0, added_quantity: qty,
+    added_cost_total: isPurchase ? totalCost : null, new_quantity: newQty
+  });
+  Object.assign(p, updatePayload);
+  state.modal = null;
+  showToast("تم تحديث المخزون بنجاح");
+  openProductDetail(p.id);
+}
+
+function openManualUpdateModal(){
+  state.manualUpdateDraft = { remaining: '', damaged: '0', newQty: '', newCost: '' };
+  state.modal = 'manual_stock_update';
+  render();
+}
+function renderManualUpdateModal(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  const d = state.manualUpdateDraft;
+  return `
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
+    <div class="modal-sheet">
+      <div class="modal-title"><span>تحديث رصيد: ${p.name}</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
+      <div class="field"><label>الكمية المتبقية بعد الاستخدام</label><input id="manual-remaining" type="number" value="${d.remaining}" oninput="state.manualUpdateDraft.remaining=this.value"></div>
+      <div class="field"><label>التوالف (إن وجدت)</label><input id="manual-damaged" type="number" value="${d.damaged}" oninput="state.manualUpdateDraft.damaged=this.value"></div>
+      <div class="field"><label>الكمية الجديدة المضافة</label><input id="manual-newqty" type="number" value="${d.newQty}" oninput="state.manualUpdateDraft.newQty=this.value"></div>
+      <div class="field"><label>سعر الكمية الجديدة (إجمالي)</label><input id="manual-newcost" type="number" value="${d.newCost}" oninput="state.manualUpdateDraft.newCost=this.value"></div>
+      <button class="btn btn-primary btn-block" onclick="submitManualUpdate()">حفظ</button>
+    </div>
+  </div>`;
+}
+async function submitManualUpdate(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  const remaining = parseFloat(document.getElementById('manual-remaining').value);
+  if(remaining==null || isNaN(remaining)){ showToast("أدخل الكمية المتبقية"); return; }
+  const damaged = parseFloat(document.getElementById('manual-damaged').value)||0;
+  const newQty = parseFloat(document.getElementById('manual-newqty').value)||0;
+  const newCost = parseFloat(document.getElementById('manual-newcost').value)||0;
+  const finalQty = remaining - damaged + newQty;
+
+  const { error } = await sb.from('products').update({ stock_quantity: finalQty }).eq('id', p.id);
+  if(error){ showToast("خطأ: "+error.message); return; }
+  await sb.from('stock_movements').insert({
+    user_id: state.user.id, product_id: p.id, movement_type: 'manual_update',
+    previous_quantity: remaining, damaged_quantity: damaged, added_quantity: newQty,
+    added_cost_total: newCost || null, new_quantity: finalQty
+  });
+  p.stock_quantity = finalQty;
+  state.modal = null;
+  showToast("تم تحديث الرصيد بنجاح");
+  openProductDetail(p.id);
+}
+
 function renderProductsPage(){
   const filtered = state.productsSearch ? state.products.filter(p=>p.name.includes(state.productsSearch) || (p.barcode||'').includes(state.productsSearch)) : state.products;
   return `
@@ -1857,14 +2140,14 @@ function renderProductsPage(){
     ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
     <div class="card">
       ${filtered.map(p=>`
-        <div class="list-row">
+        <div class="list-row" style="cursor:pointer;" onclick="openProductDetail('${p.id}')">
           <div>
             <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
             <div class="muted" style="font-size:11.5px;">${money(p.price)} ر.س / ${p.unit||'قطعة'}</div>
           </div>
           <div style="display:flex;gap:14px;">
-            <button onclick='state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
-            <button onclick="deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+            <button onclick='event.stopPropagation();state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
+            <button onclick="event.stopPropagation();deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
           </div>
         </div>
       `).join('')}
@@ -1872,16 +2155,57 @@ function renderProductsPage(){
   </div>`;
 }
 
+let draftTrackingType = null;
+function selectTrackingType(val){ draftTrackingType = val; render(); }
 function renderProductModal(){
   const p = state.editItem || {};
   const barcodeVal = p.barcode || state.pendingBarcode || '';
+  const tType = draftTrackingType || p.tracking_type || 'none';
+  const isNew = !p.id;
   return `
-  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;state.editItem=null;state.pendingBarcode='';render();}">
+  <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;state.editItem=null;state.pendingBarcode='';draftTrackingType=null;render();}">
     <div class="modal-sheet">
-      <div class="modal-title"><span>${p.id?'تعديل منتج':'إضافة منتج'}</span><button onclick="state.modal=null;state.editItem=null;state.pendingBarcode='';render()">${ICONS.x}</button></div>
+      <div class="modal-title"><span>${p.id?'تعديل منتج':'إضافة منتج'}</span><button onclick="state.modal=null;state.editItem=null;state.pendingBarcode='';draftTrackingType=null;render()">${ICONS.x}</button></div>
+
       <div class="field"><label>اسم المنتج / السلعة *</label><input id="pr-name" value="${p.name||''}"></div>
-      <div class="field"><label>السعر (ر.س) *</label><input id="pr-price" type="number" value="${p.price||''}"></div>
+
+      <div class="field">
+        <label>نوع التتبع</label>
+        <div class="grid2" style="grid-template-columns:repeat(3,1fr);">
+          ${[['auto','تلقائي'],['manual','مكوّن (يدوي)'],['none','خدمة']].map(([val,label])=>`
+            <button class="btn ${tType===val?'btn-primary':'btn-outline'}" style="font-size:11.5px;padding:9px 4px;" onclick="selectTrackingType('${val}')">${label}</button>
+          `).join('')}
+        </div>
+      </div>
+
+      ${state.categories.length>0 ? `
+      <div class="field"><label>الفئة</label>
+        <select id="pr-category">
+          <option value="">بدون فئة</option>
+          ${state.categories.map(c=>`<option value="${c.id}" ${p.category_id===c.id?'selected':''}>${c.name}</option>`).join('')}
+        </select>
+      </div>` : ''}
+
+      ${tType !== 'manual' ? `<div class="field"><label>السعر (ر.س) *</label><input id="pr-price" type="number" value="${p.price||''}"></div>` : ''}
       <div class="field"><label>الوحدة</label><input id="pr-unit" value="${p.unit||'قطعة'}"></div>
+
+      ${tType === 'auto' ? `
+        ${isNew ? `
+        <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
+          <p style="font-size:12px;color:var(--text-2);margin-bottom:8px;">بيانات المخزون الأولية</p>
+          <div style="display:flex;gap:8px;margin-bottom:10px;">
+            <input id="pr-stock" type="number" placeholder="الكمية الحالية" style="flex:1;">
+            <input id="pr-cost" type="number" placeholder="سعر الشراء (إجمالي)" style="flex:1;">
+          </div>
+        </div>` : `
+        <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
+          <div class="between" style="font-size:13px;"><span class="muted">الكمية الحالية</span><span style="font-weight:700;">${p.stock_quantity ?? 0}</span></div>
+          <div class="between" style="font-size:13px;margin-top:4px;"><span class="muted">آخر سعر شراء</span><span style="font-weight:700;">${money(p.cost_price||0)}</span></div>
+          <p class="muted" style="font-size:11px;margin-top:8px;">لتحديث الكمية استخدم "تعبئة مخزون" من صفحة المنتج</p>
+        </div>`}
+        <div class="field"><label>تنبيه قارب على النفاد (اختياري)</label><input id="pr-threshold" type="number" value="${p.low_stock_threshold||''}" placeholder="مثال: 5"></div>
+      ` : ''}
+
       <div class="field">
         <label>الباركود (اختياري)</label>
         <div style="display:flex;gap:8px;">
@@ -1894,17 +2218,55 @@ function renderProductModal(){
     </div>
   </div>`;
 }
-function submitProductForm(){
+function submitProductForm(force){
   const name = document.getElementById('pr-name').value.trim();
-  const price = document.getElementById('pr-price').value;
-  if(!name || !price){ showToast("الاسم والسعر حقلان مطلوبان"); return; }
-  saveProduct({
-    name, price,
+  const tType = draftTrackingType || state.editItem?.tracking_type || 'none';
+  const priceEl = document.getElementById('pr-price');
+  const price = priceEl ? priceEl.value : '0';
+  if(!name || (tType!=='manual' && !price)){ showToast("الاسم والسعر حقلان مطلوبان"); return; }
+
+  const barcode = document.getElementById('pr-barcode').value.trim() || null;
+
+  if(!force){
+    const excludeId = state.editItem?.id;
+    const nameDup = state.products.find(p=>p.id!==excludeId && p.name.trim()===name);
+    const barcodeDup = barcode ? state.products.find(p=>p.id!==excludeId && p.barcode===barcode) : null;
+    if(barcodeDup){
+      state.duplicateWarning = { existing: barcodeDup, forceAllowed: false };
+      render();
+      return;
+    }
+    if(nameDup){
+      state.duplicateWarning = { existing: nameDup, forceAllowed: true };
+      render();
+      return;
+    }
+  }
+
+  const categoryEl = document.getElementById('pr-category');
+  const form = {
+    name, price: price||0,
+    tracking_type: tType,
+    category_id: categoryEl ? (categoryEl.value || null) : (state.editItem?.category_id || null),
     unit: document.getElementById('pr-unit').value.trim() || 'قطعة',
     description: document.getElementById('pr-desc').value.trim(),
-    barcode: document.getElementById('pr-barcode').value.trim() || null,
-  });
+    barcode,
+  };
+  if(tType==='auto'){
+    const thresholdEl = document.getElementById('pr-threshold');
+    form.low_stock_threshold = thresholdEl?.value ? parseFloat(thresholdEl.value) : null;
+    if(!state.editItem){
+      const stockEl = document.getElementById('pr-stock');
+      const costEl = document.getElementById('pr-cost');
+      const qty = parseFloat(stockEl?.value)||0;
+      const totalCost = parseFloat(costEl?.value)||0;
+      form.stock_quantity = qty;
+      form.cost_price = qty>0 ? Math.round((totalCost/qty)*100)/100 : 0;
+    }
+  }
+  saveProduct(form);
   state.pendingBarcode = '';
+  draftTrackingType = null;
 }
 
 function renderDashboard(){
@@ -1934,6 +2296,19 @@ function renderDashboard(){
     <div class="card" style="margin-bottom:14px;">
       <p style="font-weight:700;font-size:14px;margin-bottom:10px;">المبيعات (${fmtDate(from)} - ${fmtDate(to)})</p>
       <canvas id="salesChart" height="180"></canvas>
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
+      <div class="between" style="margin-bottom:10px;">
+        <p style="font-weight:700;font-size:14px;">المصروفات مقابل المبيعات</p>
+        <button class="btn btn-sm btn-outline" onclick="printExpenseReport()">${ICONS.print} طباعة</button>
+      </div>
+      <canvas id="expenseChart" height="160"></canvas>
+      <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px;">
+        <div class="between" style="font-size:13px;padding:3px 0;"><span>إجمالي المبيعات</span><span>${money(d.totalSales)}</span></div>
+        <div class="between" style="font-size:13px;padding:3px 0;"><span>إجمالي المصروفات</span><span style="color:var(--danger);">${money(d.totalExpenses)}</span></div>
+        <div class="between" style="font-size:14px;font-weight:700;padding-top:6px;border-top:1px solid var(--border);margin-top:4px;"><span>الصافي التقديري</span><span style="color:${d.netEstimate>=0?'var(--success)':'var(--danger)'};">${money(d.netEstimate)}</span></div>
+      </div>
     </div>
 
     ${d.unpaidCount>0 ? `
@@ -1970,6 +2345,42 @@ function renderDashboard(){
     </div>
   </div>`;
 }
+function printStockHistory(){
+  const p = state.products.find(x=>x.id===state.viewingProductId);
+  const c = state.company;
+  const area = document.getElementById('print-area');
+  area.className = '';
+  area.innerHTML = `
+    <div dir="rtl" style="font-family:'Tajawal',sans-serif;padding:16px;">
+      <div style="text-align:center;margin-bottom:16px;">
+        <div style="font-weight:700;font-size:16px;">${c?.name||''}</div>
+        <div style="font-size:12px;color:#6B7280;">سجل حركة المخزون — ${p.name}</div>
+        <div style="font-size:11px;color:#6B7280;">${new Date().toLocaleDateString('ar-SA')}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="background:#1F2937;color:#fff;">
+            <th style="padding:6px;">التاريخ</th><th style="padding:6px;">النوع</th><th style="padding:6px;">السابق</th><th style="padding:6px;">التوالف</th><th style="padding:6px;">المضاف</th><th style="padding:6px;">الجديد</th><th style="padding:6px;">التكلفة</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${state.stockMovements.map((m,idx)=>`
+            <tr style="background:${idx%2?'#F9FAFB':'#fff'};border-bottom:1px solid #E5E7EB;">
+              <td style="padding:6px;text-align:center;">${new Date(m.created_at).toLocaleDateString('ar-SA')}</td>
+              <td style="padding:6px;text-align:center;">${movementTypeLabel(m.movement_type)}</td>
+              <td style="padding:6px;text-align:center;">${m.previous_quantity??'-'}</td>
+              <td style="padding:6px;text-align:center;">${m.damaged_quantity||0}</td>
+              <td style="padding:6px;text-align:center;">${m.added_quantity}</td>
+              <td style="padding:6px;text-align:center;">${m.new_quantity}</td>
+              <td style="padding:6px;text-align:center;">${m.added_cost_total?money(m.added_cost_total):'-'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  setTimeout(()=>waitForImagesThenPrint(area), 50);
+}
+
 function printDailyBrief(){
   const d = computeDashboard();
   const c = state.company;
@@ -1993,15 +2404,51 @@ function printDailyBrief(){
   setTimeout(()=>window.print(), 150);
 }
 let chartInstance = null;
+let expenseChartInstance = null;
 function drawChart(d){
   const canvas = document.getElementById('salesChart');
-  if(!canvas) return;
-  if(chartInstance) chartInstance.destroy();
-  chartInstance = new Chart(canvas, {
-    type:'bar',
-    data:{ labels: d.dayList.map(x=>x.slice(5)), datasets:[{ data: d.dailyTotals, backgroundColor:'#4F46E5', borderRadius:6 }] },
-    options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true} } }
-  });
+  if(canvas){
+    if(chartInstance) chartInstance.destroy();
+    chartInstance = new Chart(canvas, {
+      type:'bar',
+      data:{ labels: d.dayList.map(x=>x.slice(5)), datasets:[{ data: d.dailyTotals, backgroundColor:'#4F46E5', borderRadius:6 }] },
+      options:{ plugins:{legend:{display:false}}, scales:{ y:{beginAtZero:true} } }
+    });
+  }
+  const expCanvas = document.getElementById('expenseChart');
+  if(expCanvas){
+    if(expenseChartInstance) expenseChartInstance.destroy();
+    expenseChartInstance = new Chart(expCanvas, {
+      type:'doughnut',
+      data:{ labels:['المبيعات','المصروفات'], datasets:[{ data:[d.totalSales, d.totalExpenses], backgroundColor:['#16A34A','#DC2626'] }] },
+      options:{ plugins:{legend:{position:'bottom', labels:{font:{family:'Tajawal'}}}} }
+    });
+  }
+}
+async function printExpenseReport(){
+  const d = computeDashboard();
+  const {from,to} = dashDateRange();
+  const c = state.company;
+  let chartImg = '';
+  if(expenseChartInstance){ chartImg = expenseChartInstance.toBase64Image(); }
+  const area = document.getElementById('print-area');
+  area.className = '';
+  area.innerHTML = `
+    <div dir="rtl" style="font-family:'Tajawal',sans-serif;padding:16px;">
+      <div style="text-align:center;margin-bottom:16px;">
+        <div style="font-weight:700;font-size:16px;">${c?.name||''}</div>
+        <div style="font-size:12px;color:#6B7280;">تقرير المصروفات مقابل المبيعات</div>
+        <div style="font-size:11px;color:#6B7280;">${fmtDate(from)} — ${fmtDate(to)}</div>
+      </div>
+      ${chartImg ? `<div style="text-align:center;margin-bottom:16px;"><img src="${chartImg}" style="width:220px;height:220px;"></div>` : ''}
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <tr style="background:#1F2937;color:#fff;"><td style="padding:8px;">البند</td><td style="padding:8px;">المبلغ (ر.س)</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">إجمالي المبيعات</td><td style="padding:8px;">${money(d.totalSales)}</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">إجمالي المصروفات</td><td style="padding:8px;">${money(d.totalExpenses)}</td></tr>
+        <tr style="font-weight:700;"><td style="padding:8px;">الصافي التقديري</td><td style="padding:8px;">${money(d.netEstimate)}</td></tr>
+      </table>
+    </div>`;
+  setTimeout(()=>waitForImagesThenPrint(area), 50);
 }
 
 function renderMoreSheet(){
@@ -2021,6 +2468,7 @@ function renderMoreSheet(){
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='customers_page';render()">${ICONS.user} العملاء</button>
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='products_page';render()">${ICONS.box} المنتجات</button>
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.contactDraft=[];state.view='setup_company';render()">${ICONS.settings} بيانات المنشأة</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='category_management';render()">${ICONS.list} إدارة الفئات</button>
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;state.view='staff_management';render()">${ICONS.user} إدارة الموظفين</button>
       ${state.staffProfiles.length>0 ? `<button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.navMoreOpen=false;switchProfile()">${ICONS.logout} تبديل المستخدم</button>` : ''}
       <button class="btn btn-outline btn-block" style="color:var(--danger);justify-content:flex-start;" onclick="handleLogout()">${ICONS.logout} تسجيل الخروج</button>
@@ -2120,6 +2568,8 @@ function render(){
     case 'connection_error': html = renderConnectionError(); break;
     case 'select_profile': html = renderSelectProfile(); break;
     case 'staff_management': html = renderStaffManagement(); break;
+    case 'category_management': html = renderCategoryManagement(); break;
+    case 'product_detail': html = renderProductDetail(); break;
     case 'staff_brief': html = renderStaffBrief(); break;
     case 'setup_company': html = renderSetupCompany(); break;
     case 'pos': html = renderPOS(); break;
@@ -2137,6 +2587,9 @@ function render(){
   if(state.modal==='add_product') html += renderProductModal();
   if(state.modal==='edit_invoice') html += renderEditInvoiceModal();
   if(state.modal==='barcode_scan') html += renderBarcodeScanModal();
+  if(state.duplicateWarning) html += renderDuplicateWarningModal();
+  if(state.modal==='restock_product') html += renderRestockModal();
+  if(state.modal==='manual_stock_update') html += renderManualUpdateModal();
   if(state.navMoreOpen) html += renderMoreSheet();
   if(state.toastMsg) html += `<div class="toast">${state.toastMsg}</div>`;
   app.innerHTML = html;
