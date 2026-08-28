@@ -149,11 +149,12 @@ const state = {
   categories: [],
   duplicateWarning: null,
   deleteProductWarning: null,
+  showArchivedProducts: false,
   posActiveCategory: 'all',
   productsActiveCategory: 'all',
   viewingProductId: null,
   stockMovements: [],
-  restockDraft: { movementType: 'purchase', qty: '', cost: '' },
+  restockDraft: { qty: '', cost: '' },
   manualUpdateDraft: { remaining: '', damaged: '0', newQty: '', newCost: '' },
   allStockMovements: [],
   activeProfile: null,
@@ -246,6 +247,52 @@ function postLoginView(){
   }
   state.activeProfile = { role:'admin' };
   return "pos";
+}
+
+/* ============ تصدير نسخة احتياطية ============ */
+async function exportBackup(){
+  showToast("جارٍ تجهيز النسخة الاحتياطية...");
+  const uid = state.user.id;
+  try{
+    const [company, customers, products, categories, invoicesRes, stockMovements, staff] = await Promise.all([
+      sb.from('company_settings').select('*').eq('user_id', uid).maybeSingle(),
+      sb.from('customers').select('*').eq('user_id', uid),
+      sb.from('products').select('*').eq('user_id', uid),
+      sb.from('product_categories').select('*').eq('user_id', uid),
+      sb.from('invoices').select('*').eq('user_id', uid),
+      sb.from('stock_movements').select('*').eq('user_id', uid),
+      sb.from('staff_profiles').select('id, name, created_at').eq('user_id', uid)
+    ]);
+    const invoiceIds = (invoicesRes.data||[]).map(i=>i.id);
+    let invoiceItems = [];
+    if(invoiceIds.length>0){
+      const { data } = await sb.from('invoice_items').select('*').in('invoice_id', invoiceIds);
+      invoiceItems = data || [];
+    }
+    const backup = {
+      exported_at: new Date().toISOString(),
+      company: company.data || null,
+      customers: customers.data || [],
+      products: products.data || [],
+      categories: categories.data || [],
+      invoices: invoicesRes.data || [],
+      invoice_items: invoiceItems,
+      stock_movements: stockMovements.data || [],
+      staff_profiles: staff.data || []
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const dateStr = isoDay(new Date());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `backup-${(state.company?.name||'نظام-الفوترة').replace(/\s+/g,'-')}-${dateStr}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    showToast("تم تحميل النسخة الاحتياطية بنجاح");
+  }catch(e){
+    console.error('exportBackup error:', e);
+    showToast("تعذّر تجهيز النسخة الاحتياطية: "+e.message);
+  }
 }
 
 async function loadAllData(){
@@ -452,7 +499,11 @@ async function deleteCustomer(id){
 
 /* ============ منتجات ============ */
 async function saveProduct(form){
-  const payload = { ...form, price: parseFloat(form.price)||0, user_id: state.user.id };
+  const { initial_cost_total, ...formForDb } = form;
+  if(!state.editItem && form.tracking_type === 'manual'){
+    formForDb.cost_price = initial_cost_total || 0;
+  }
+  const payload = { ...formForDb, price: parseFloat(form.price)||0, user_id: state.user.id };
   let res;
   const isNew = !state.editItem;
   if(state.editItem){
@@ -462,25 +513,43 @@ async function saveProduct(form){
   }
   if(res.error){ showToast("خطأ: " + res.error.message); return; }
   if(isNew && payload.tracking_type === 'auto' && parseFloat(payload.stock_quantity) > 0){
-    await sb.from('stock_movements').insert({
+    const { data: mv } = await sb.from('stock_movements').insert({
       user_id: state.user.id, product_id: res.data.id, movement_type: 'purchase',
       previous_quantity: 0, damaged_quantity: 0,
       added_quantity: payload.stock_quantity, added_cost_total: payload.cost_price ? payload.cost_price * payload.stock_quantity : null,
       new_quantity: payload.stock_quantity
-    });
+    }).select().single();
+    if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
   }
   if(isNew && payload.tracking_type === 'manual' && parseFloat(payload.stock_quantity) > 0){
-    await sb.from('stock_movements').insert({
+    const { data: mv } = await sb.from('stock_movements').insert({
       user_id: state.user.id, product_id: res.data.id, movement_type: 'manual_update',
       previous_quantity: 0, damaged_quantity: 0,
-      added_quantity: payload.stock_quantity, added_cost_total: null,
+      added_quantity: payload.stock_quantity, added_cost_total: initial_cost_total || null,
       new_quantity: payload.stock_quantity
-    });
+    }).select().single();
+    if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
   }
   if(state.editItem) state.products = state.products.map(p=>p.id===res.data.id?res.data:p);
   else state.products = [res.data, ...state.products];
   state.modal = null; state.editItem = null; state.pendingBarcode = ''; state.duplicateWarning = null;
   showToast("تم حفظ بيانات المنتج بنجاح");
+  render();
+}
+async function archiveProduct(id){
+  const { error } = await sb.from('products').update({ is_archived: true }).eq('id', id);
+  if(error){ showToast("خطأ: "+error.message); return; }
+  const p = state.products.find(x=>x.id===id);
+  if(p) p.is_archived = true;
+  showToast("تم أرشفة المنتج");
+  render();
+}
+async function unarchiveProduct(id){
+  const { error } = await sb.from('products').update({ is_archived: false }).eq('id', id);
+  if(error){ showToast("خطأ: "+error.message); return; }
+  const p = state.products.find(x=>x.id===id);
+  if(p) p.is_archived = false;
+  showToast("تم إعادة تفعيل المنتج");
   render();
 }
 function deleteProduct(id){
@@ -594,13 +663,15 @@ function onBarcodeScanned(text){
     showToast("تم قراءة الباركود");
   } else if(state.scanContext === 'pos'){
     state.modal = null;
-    const product = state.products.find(p => p.barcode && p.barcode === text);
+    const product = state.products.find(p => p.barcode && p.barcode === text && !p.is_archived);
     if(product){
       addProductToCart(product);
       showToast("تمت إضافة \""+product.name+"\" للسلة");
     } else {
       render();
-      if(confirm("هذا الباركود غير مسجل بمنتجاتك. هل تريد إضافته كمنتج جديد؟")){
+      if(isStaff()){
+        showToast("هذا الباركود غير مسجل بالمنتجات");
+      } else if(confirm("هذا الباركود غير مسجل بمنتجاتك. هل تريد إضافته كمنتج جديد؟")){
         state.editItem = null;
         state.pendingBarcode = text;
         openModal('add_product');
@@ -621,9 +692,9 @@ function addProductToCart(product){
 function handleSearchEnter(){
   const q = (state.posSearch||'').trim();
   if(!q) return;
-  let product = state.products.find(p=>p.barcode && p.barcode===q);
+  let product = state.products.find(p=>p.barcode && p.barcode===q && !p.is_archived);
   if(!product){
-    const matches = state.products.filter(p=>p.name.includes(q) || (p.barcode||'').includes(q));
+    const matches = state.products.filter(p=>(p.name.includes(q) || (p.barcode||'').includes(q)) && !p.is_archived);
     if(matches.length===1) product = matches[0];
   }
   if(product){
@@ -699,6 +770,7 @@ function offlineQueueToInvoiceShape(rec){
     cash_amount: rec.invoicePayload.cash_amount,
     card_amount: rec.invoicePayload.card_amount,
     transfer_amount: rec.invoicePayload.transfer_amount,
+    created_by: rec.invoicePayload.created_by,
     items: rec.items,
     customer: customer || null,
     _offlinePending: true
@@ -793,7 +865,8 @@ async function confirmInvoice(){
       status: payInfo.status, payment_method: state.checkout.payment,
       paid_amount: payInfo.paid, remaining_amount: payInfo.remaining,
       amount_received: payInfo.amount_received, change_given: payInfo.change,
-      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount
+      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount,
+      created_by: activeProfileName()
     };
     const rec = saveOfflineInvoice(invoicePayload, items, customerLocalData);
     state.lastInvoice = offlineQueueToInvoiceShape(rec);
@@ -851,7 +924,8 @@ async function confirmInvoice(){
       payment_method: state.checkout.payment,
       paid_amount: payInfo.paid, remaining_amount: payInfo.remaining,
       amount_received: payInfo.amount_received, change_given: payInfo.change,
-      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount
+      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount,
+      created_by: activeProfileName()
     };
     const { data: inv, error: invErr } = await sb.from('invoices').insert(invoicePayload).select().single();
     if(invErr){
@@ -994,7 +1068,8 @@ function invoiceReceiptHTML(inv, c){
 
     <div style="border-top:1px dashed #999;padding-top:10px;font-size:11px;color:#6B7280;text-align:center;">
       <div style="margin-bottom:4px;">طريقة الدفع: ${payLabel(inv.payment_method)}</div>
-      <div style="margin-bottom:8px;">الحالة: ${statusLabel(inv.status)}</div>
+      <div style="margin-bottom:${inv.created_by?'4px':'8px'};">الحالة: ${statusLabel(inv.status)}</div>
+      ${inv.created_by ? `<div style="margin-bottom:8px;">البائع: <bdi>${inv.created_by}</bdi></div>` : ''}
       <div style="line-height:1.5;">${contacts}</div>
       <div style="margin-top:10px;">شكراً لتعاملكم معنا</div>
     </div>
@@ -1128,6 +1203,17 @@ function computeDashboard(){
     }
   });
 
+  const byPaymentRange = {cash:0, card:0, transfer:0};
+  inRange.forEach(i=>{
+    if(i.payment_method==='split'){
+      byPaymentRange.cash += parseFloat(i.cash_amount||0);
+      byPaymentRange.card += parseFloat(i.card_amount||0);
+      byPaymentRange.transfer += parseFloat(i.transfer_amount||0);
+    } else {
+      byPaymentRange[i.payment_method] = (byPaymentRange[i.payment_method]||0) + parseFloat(i.paid_amount!=null ? i.paid_amount : i.total);
+    }
+  });
+
   const unpaidAll = state.invoices.filter(i=>i.status==='unpaid' || i.status==='partial');
   const unpaidTotal = unpaidAll.reduce((s,i)=>s + (i.status==='partial' ? parseFloat(i.remaining_amount||0) : parseFloat(i.total)),0);
 
@@ -1136,7 +1222,7 @@ function computeDashboard(){
   const netEstimate = totalSales - totalExpenses;
 
   return { totalSales, collected, receivable, countInRange: inRange.length, dayList, dailyTotals, customersCount: state.customers.length,
-           todaySales: todayInvoices.reduce((s,i)=>s+parseFloat(i.total),0), todayCount: todayInvoices.length, byPayment,
+           todaySales: todayInvoices.reduce((s,i)=>s+parseFloat(i.total),0), todayCount: todayInvoices.length, byPayment, byPaymentRange,
            unpaidAll, unpaidTotal, unpaidCount: unpaidAll.length, totalExpenses, netEstimate };
 }
 
@@ -1174,6 +1260,10 @@ function renderAuth(){
 }
 
 function isStaff(){ return state.activeProfile && state.activeProfile.role === 'staff'; }
+function activeProfileName(){
+  if(isStaff()) return state.activeProfile.name;
+  return state.company?.admin_name || 'الأدمن';
+}
 
 function renderSelectProfile(){
   return `
@@ -1186,7 +1276,7 @@ function renderSelectProfile(){
     <button class="card" style="display:flex;align-items:center;gap:12px;margin-bottom:10px;width:100%;text-align:right;" onclick="promptAdminPin()">
       <div class="avatar" style="width:44px;height:44px;">${ICONS.settings}</div>
       <div style="flex:1;">
-        <div style="font-weight:700;font-size:14.5px;">أنت (الأدمن)</div>
+        <div style="font-weight:700;font-size:14.5px;">${state.company?.admin_name ? state.company.admin_name+' (الأدمن)' : 'أنت (الأدمن)'}</div>
         <div class="muted" style="font-size:12px;">وصول كامل لكل الشاشات</div>
       </div>
       ${!state.company?.admin_pin ? `<span class="pill" style="background:var(--warn-bg);color:var(--warn);">بدون رمز</span>` : ''}
@@ -1215,7 +1305,7 @@ function renderPinPrompt(){
   <div class="modal-overlay" onclick="if(event.target===this){state.pinAttemptProfile=null;state.pinAttemptError='';render();}">
     <div class="modal-sheet">
       <div class="modal-title"><span>${label}</span><button onclick="state.pinAttemptProfile=null;state.pinAttemptError='';render()">${ICONS.x}</button></div>
-      <div class="field"><label>أدخل الرمز</label><input id="pin-input" type="tel" inputmode="numeric" maxlength="6" placeholder="••••••" style="text-align:center;font-size:22px;letter-spacing:6px;"></div>
+      <div class="field"><label>أدخل الرمز</label><input id="pin-input" type="tel" inputmode="numeric" maxlength="6" placeholder="••••••" style="text-align:center;font-size:22px;letter-spacing:6px;" oninput="checkAutoSubmitPin('${state.pinAttemptProfile}')"></div>
       ${state.pinAttemptError ? `<div class="err-text">${state.pinAttemptError}</div>` : ''}
       <button class="btn btn-primary btn-block" onclick="submitStaffPin('${state.pinAttemptProfile}')">دخول</button>
     </div>
@@ -1236,6 +1326,14 @@ function promptStaffPin(profileId){
   state.pinAttemptError = "";
   render();
   setTimeout(()=>document.getElementById('pin-input')?.focus(), 100);
+}
+function checkAutoSubmitPin(profileId){
+  const entered = document.getElementById('pin-input')?.value.trim();
+  if(!entered) return;
+  const expectedPin = profileId === 'admin' ? state.company?.admin_pin : state.staffProfiles.find(x=>x.id===profileId)?.pin;
+  if(expectedPin && entered.length === expectedPin.length){
+    submitStaffPin(profileId);
+  }
 }
 function submitStaffPin(profileId){
   const entered = document.getElementById('pin-input')?.value.trim();
@@ -1338,6 +1436,12 @@ function renderSetupCompany(){
     </div>
 
     <div class="card" style="margin-bottom:14px;">
+      <label style="margin-bottom:10px;">اسمك (كأدمن)</label>
+      <p class="muted" style="font-size:12px;margin-bottom:10px;">يظهر بشاشة اختيار المستخدم وعلى الفواتير اللي تصدرها بنفسك</p>
+      <input id="c-admin-name" value="${c.admin_name||''}" placeholder="مثال: فهد">
+    </div>
+
+    <div class="card" style="margin-bottom:14px;">
       <label style="margin-bottom:10px;">رمز حماية الأدمن (اختياري)</label>
       <p class="muted" style="font-size:12px;margin-bottom:10px;">لو حددته، بيُطلب منك كل مرة تختار "أنت (الأدمن)" بشاشة اختيار المستخدم</p>
       <input id="c-admin-pin" type="tel" inputmode="numeric" maxlength="6" placeholder="مثال: 1234" value="${c.admin_pin||''}">
@@ -1358,6 +1462,7 @@ function submitCompanyForm(){
     address: document.getElementById('c-address').value.trim(),
     tax_number: document.getElementById('c-tax').value.trim(),
     commercial_register: document.getElementById('c-cr').value.trim(),
+    admin_name: document.getElementById('c-admin-name').value.trim() || null,
     admin_pin: adminPin || null,
   };
   saveCompany(form, pendingLogoFile);
@@ -1366,7 +1471,7 @@ function submitCompanyForm(){
 
 function renderPOS(){
   const total = cartSubtotal();
-  const sellable = state.products.filter(p=>p.tracking_type !== 'manual');
+  const sellable = state.products.filter(p=>p.tracking_type !== 'manual' && !p.is_archived);
   const byCategory = state.posActiveCategory==='all' ? sellable : (state.posActiveCategory==='none' ? sellable.filter(p=>!p.category_id) : sellable.filter(p=>p.category_id===state.posActiveCategory));
   const filtered = state.posSearch ? byCategory.filter(p=>p.name.includes(state.posSearch) || (p.barcode||'').includes(state.posSearch)) : byCategory;
   return `
@@ -1392,7 +1497,7 @@ function renderPOS(){
       <div class="empty">
         ${ICONS.box}
         <p style="margin-top:10px;">لم تتم إضافة أي منتجات بعد</p>
-        <button class="btn btn-primary" style="margin:14px auto 0;" onclick="openModal('add_product')">${ICONS.plus} إضافة منتج</button>
+        ${!isStaff() ? `<button class="btn btn-primary" style="margin:14px auto 0;" onclick="openModal('add_product')">${ICONS.plus} إضافة منتج</button>` : ''}
       </div>
     ` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;">
@@ -1855,7 +1960,7 @@ function renderStaffBrief(){
       <div class="between" style="font-size:13px;padding:5px 0;"><span>نقدي</span><span>${money(byPayment.cash||0)}</span></div>
       <div class="between" style="font-size:13px;padding:5px 0;"><span>شبكة</span><span>${money(byPayment.card||0)}</span></div>
       <div class="between" style="font-size:13px;padding:5px 0;margin-bottom:14px;"><span>تحويل</span><span>${money(byPayment.transfer||0)}</span></div>
-      <button class="btn btn-outline btn-block" onclick="printDailyBrief()">${ICONS.print} طباعة الملخص</button>
+      <button class="btn btn-outline btn-block" onclick="printDailyBrief(true)">${ICONS.print} طباعة الملخص</button>
     </div>
 
     ${todayInvoices.length>0 ? `
@@ -1957,14 +2062,20 @@ function renderDuplicateWarningModal(){
   <div class="modal-overlay">
     <div class="modal-sheet" style="padding-bottom:24px;">
       <div class="modal-title"><span>هذا المنتج موجود مسبقاً</span><button onclick="state.duplicateWarning=null;render()">${ICONS.x}</button></div>
-      <p class="muted" style="font-size:13px;margin-bottom:16px;">يوجد منتج باسم "<bdi>${d.existing.name}</bdi>"${d.forceAllowed?'':' بنفس الباركود'} مسجّل مسبقاً.</p>
+      <p class="muted" style="font-size:13px;margin-bottom:16px;">يوجد منتج باسم "<bdi>${d.existing.name}</bdi>"${d.forceAllowed?'':' بنفس الباركود'} مسجّل مسبقاً.${d.existing.is_archived?' هذا المنتج مؤرشف حالياً، وسيُعاد تفعيله تلقائياً عند الدمج معه.':''}</p>
       <button class="btn btn-primary btn-block" style="margin-bottom:10px;" onclick="confirmDuplicateMerge()">دمج معه (تعديل المنتج الموجود)</button>
       ${d.forceAllowed ? `<button class="btn btn-outline btn-block" onclick="confirmDuplicateCreateAnyway()">إنشاء منتج منفصل رغم ذلك</button>` : `<button class="btn btn-outline btn-block" onclick="state.duplicateWarning=null;render()">إلغاء وتعديل الباركود</button>`}
     </div>
   </div>`;
 }
-function confirmDuplicateMerge(){
-  state.editItem = state.duplicateWarning.existing;
+async function confirmDuplicateMerge(){
+  const existing = state.duplicateWarning.existing;
+  if(existing.is_archived){
+    await sb.from('products').update({ is_archived: false }).eq('id', existing.id);
+    existing.is_archived = false;
+    showToast("تمت إعادة تفعيل المنتج");
+  }
+  state.editItem = existing;
   state.duplicateWarning = null;
   draftTrackingType = null;
   render();
@@ -2035,7 +2146,7 @@ function renderProductDetail(){
   </div>
   <div class="page">
     <div class="card" style="margin-bottom:14px;">
-      <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">السعر</span><span style="font-weight:700;">${money(p.price)} ر.س</span></div>
+      <div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">${p.tracking_type==='manual' ? 'القيمة الحالية' : 'سعر البيع'}</span><span style="font-weight:700;">${money(p.tracking_type==='manual' ? (p.cost_price||0) : p.price)} ر.س</span></div>
       ${p.category_id ? `<div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الفئة</span><span>${state.categories.find(c=>c.id===p.category_id)?.name||''}</span></div>` : ''}
       ${p.barcode ? `<div class="between" style="padding:5px 0;font-size:13px;"><span class="muted">الباركود</span><span>${p.barcode}</span></div>` : ''}
 
@@ -2084,7 +2195,7 @@ function renderProductDetail(){
 }
 
 function openRestockModal(){
-  state.restockDraft = { movementType: 'purchase', qty: '', cost: '' };
+  state.restockDraft = { qty: '', cost: '' };
   state.modal = 'restock_product';
   render();
 }
@@ -2095,13 +2206,8 @@ function renderRestockModal(){
   <div class="modal-overlay" onclick="if(event.target===this){state.modal=null;render();}">
     <div class="modal-sheet">
       <div class="modal-title"><span>تعبئة مخزون: ${p.name}</span><button onclick="state.modal=null;render()">${ICONS.x}</button></div>
-      <label style="margin-bottom:8px;">طريقة الإضافة</label>
-      <div class="grid2" style="margin-bottom:14px;">
-        <button class="btn ${d.movementType==='purchase'?'btn-primary':'btn-outline'}" onclick="state.restockDraft.movementType='purchase';render()">استلام بضاعة</button>
-        <button class="btn ${d.movementType==='production'?'btn-primary':'btn-outline'}" onclick="state.restockDraft.movementType='production';render()">إنتاج</button>
-      </div>
       <div class="field"><label>الكمية الجديدة</label><input id="restock-qty" type="number" value="${d.qty}" oninput="state.restockDraft.qty=this.value"></div>
-      ${d.movementType==='purchase' ? `<div class="field"><label>سعر الشراء الإجمالي</label><input id="restock-cost" type="number" value="${d.cost}" oninput="state.restockDraft.cost=this.value"></div>` : ''}
+      <div class="field"><label>سعر الشراء الإجمالي</label><input id="restock-cost" type="number" value="${d.cost}" oninput="state.restockDraft.cost=this.value"></div>
       <button class="btn btn-primary btn-block" onclick="submitRestock()">حفظ</button>
     </div>
   </div>`;
@@ -2110,21 +2216,20 @@ async function submitRestock(){
   const p = state.products.find(x=>x.id===state.viewingProductId);
   const qty = parseFloat(document.getElementById('restock-qty').value);
   if(!qty || qty<=0){ showToast("أدخل كمية صحيحة"); return; }
-  const isPurchase = state.restockDraft.movementType === 'purchase';
-  const totalCost = isPurchase ? (parseFloat(document.getElementById('restock-cost').value)||0) : 0;
+  const totalCost = parseFloat(document.getElementById('restock-cost').value)||0;
   const previous = parseFloat(p.stock_quantity)||0;
   const newQty = previous + qty;
-  const newCostPerUnit = isPurchase && qty>0 ? Math.round((totalCost/qty)*100)/100 : p.cost_price;
+  const newCostPerUnit = qty>0 ? Math.round((totalCost/qty)*100)/100 : p.cost_price;
 
-  const updatePayload = { stock_quantity: newQty };
-  if(isPurchase) updatePayload.cost_price = newCostPerUnit;
+  const updatePayload = { stock_quantity: newQty, cost_price: newCostPerUnit };
   const { error } = await sb.from('products').update(updatePayload).eq('id', p.id);
   if(error){ showToast("خطأ: "+error.message); return; }
-  await sb.from('stock_movements').insert({
-    user_id: state.user.id, product_id: p.id, movement_type: state.restockDraft.movementType,
+  const { data: mv } = await sb.from('stock_movements').insert({
+    user_id: state.user.id, product_id: p.id, movement_type: 'purchase',
     previous_quantity: previous, damaged_quantity: 0, added_quantity: qty,
-    added_cost_total: isPurchase ? totalCost : null, new_quantity: newQty
-  });
+    added_cost_total: totalCost, new_quantity: newQty
+  }).select().single();
+  if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
   Object.assign(p, updatePayload);
   state.modal = null;
   showToast("تم تحديث المخزون بنجاح");
@@ -2160,21 +2265,30 @@ async function submitManualUpdate(){
   const newCost = parseFloat(document.getElementById('manual-newcost').value)||0;
   const finalQty = remaining - damaged + newQty;
 
-  const { error } = await sb.from('products').update({ stock_quantity: finalQty }).eq('id', p.id);
+  // القيمة التراكمية: قيمة الكمية المتبقية (بسعر الوحدة من قبل، بدون خصم التوالف) + تكلفة الدفعة الجديدة
+  const previousUnitCost = (parseFloat(p.stock_quantity)||0) > 0 ? (parseFloat(p.cost_price)||0) / parseFloat(p.stock_quantity) : 0;
+  const remainingValue = remaining * previousUnitCost;
+  const newCostPrice = Math.round((remainingValue + newCost) * 100) / 100;
+
+  const { error } = await sb.from('products').update({ stock_quantity: finalQty, cost_price: newCostPrice }).eq('id', p.id);
   if(error){ showToast("خطأ: "+error.message); return; }
-  await sb.from('stock_movements').insert({
+  const { data: mv } = await sb.from('stock_movements').insert({
     user_id: state.user.id, product_id: p.id, movement_type: 'manual_update',
     previous_quantity: remaining, damaged_quantity: damaged, added_quantity: newQty,
     added_cost_total: newCost || null, new_quantity: finalQty
-  });
+  }).select().single();
+  if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
   p.stock_quantity = finalQty;
+  p.cost_price = newCostPrice;
   state.modal = null;
   showToast("تم تحديث الرصيد بنجاح");
   openProductDetail(p.id);
 }
 
 function renderProductsPage(){
-  const byCategory = state.productsActiveCategory==='all' ? state.products : (state.productsActiveCategory==='none' ? state.products.filter(p=>!p.category_id) : state.products.filter(p=>p.category_id===state.productsActiveCategory));
+  const activeProducts = state.products.filter(p=>!p.is_archived);
+  const archivedProducts = state.products.filter(p=>p.is_archived);
+  const byCategory = state.productsActiveCategory==='all' ? activeProducts : (state.productsActiveCategory==='none' ? activeProducts.filter(p=>!p.category_id) : activeProducts.filter(p=>p.category_id===state.productsActiveCategory));
   const filtered = state.productsSearch ? byCategory.filter(p=>p.name.includes(state.productsSearch) || (p.barcode||'').includes(state.productsSearch)) : byCategory;
   return `
   <div class="topbar">
@@ -2183,18 +2297,18 @@ function renderProductsPage(){
     <button class="btn btn-primary btn-sm" onclick="state.editItem=null;openModal('add_product')">${ICONS.plus}</button>
   </div>
   <div class="page">
-    ${state.products.length>0 ? `
+    ${activeProducts.length>0 ? `
       <div style="position:relative;margin-bottom:12px;">
         <input id="products-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.productsSearch||''}" oninput="state.productsSearch=this.value;render()" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
-    ${state.categories.length>0 && state.products.length>0 ? `
+    ${state.categories.length>0 && activeProducts.length>0 ? `
       <div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;">
         <button class="btn btn-sm ${state.productsActiveCategory==='all'?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='all';render()">الكل</button>
         ${state.categories.map(c=>`<button class="btn btn-sm ${state.productsActiveCategory===c.id?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='${c.id}';render()">${c.name}</button>`).join('')}
         <button class="btn btn-sm ${state.productsActiveCategory==='none'?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='none';render()">بدون فئة</button>
       </div>` : ''}
-    ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
+    ${activeProducts.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
     ${[['auto','تتبع تلقائي'],['manual','تتبع يدوي'],['none','بدون تتبع']].map(([type,label])=>{
       const group = filtered.filter(p=>(p.tracking_type||'none')===type);
       if(group.length===0) return '';
@@ -2209,12 +2323,34 @@ function renderProductsPage(){
               </div>
               <div style="display:flex;gap:14px;">
                 <button onclick='event.stopPropagation();state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
-                <button onclick="event.stopPropagation();deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+                <button onclick="event.stopPropagation();archiveProduct('${p.id}')" class="muted" style="font-size:11.5px;">أرشفة</button>
               </div>
             </div>
           `).join('')}
         </div>`;
     }).join('')}`}
+
+    ${archivedProducts.length>0 ? `
+      <button class="link-btn" style="display:block;margin:16px auto 0;" onclick="state.showArchivedProducts=!state.showArchivedProducts;render()">
+        ${state.showArchivedProducts ? 'إخفاء المؤرشفة' : `عرض المؤرشفة (${archivedProducts.length})`}
+      </button>
+      ${state.showArchivedProducts ? `
+        <div class="day-header">المنتجات المؤرشفة</div>
+        <div class="card">
+          ${archivedProducts.map(p=>`
+            <div class="list-row">
+              <div>
+                <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
+                <div class="muted" style="font-size:11.5px;">${money(p.price)} ر.س / ${p.unit||'قطعة'}</div>
+              </div>
+              <div style="display:flex;gap:12px;">
+                <button class="btn-sm btn-outline btn" onclick="unarchiveProduct('${p.id}')">إعادة تفعيل</button>
+                <button onclick="deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>` : ''}
+    ` : ''}
   </div>`;
 }
 
@@ -2249,7 +2385,7 @@ function renderProductModal(){
         </select>
       </div>` : ''}
 
-      ${tType !== 'manual' ? `<div class="field"><label>السعر (ر.س) *</label><input id="pr-price" type="number" value="${p.price||''}"></div>` : ''}
+      ${tType !== 'manual' ? `<div class="field"><label>سعر البيع (ر.س) *</label><input id="pr-price" type="number" value="${p.price||''}"></div>` : ''}
       <div class="field"><label>الوحدة</label><input id="pr-unit" value="${p.unit||'قطعة'}"></div>
 
       ${tType === 'auto' ? `
@@ -2271,7 +2407,10 @@ function renderProductModal(){
 
       ${tType === 'manual' ? `
         ${isNew ? `
-        <div class="field"><label>الكمية الابتدائية</label><input id="pr-initial-qty" type="number" placeholder="0"></div>` : `
+        <div style="display:flex;gap:8px;margin-bottom:14px;">
+          <input id="pr-initial-qty" type="number" placeholder="الكمية الابتدائية" style="flex:1;">
+          <input id="pr-initial-cost" type="number" placeholder="سعر الكمية الابتدائية (إجمالي)" style="flex:1;">
+        </div>` : `
         <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
           <div class="between" style="font-size:13px;"><span class="muted">الرصيد الحالي</span><span style="font-weight:700;">${p.stock_quantity ?? 0}</span></div>
           <p class="muted" style="font-size:11px;margin-top:8px;">لتحديث الرصيد استخدم "تحديث الرصيد" من صفحة المنتج</p>
@@ -2338,7 +2477,9 @@ function submitProductForm(force){
   }
   if(tType==='manual' && !state.editItem){
     const initialQtyEl = document.getElementById('pr-initial-qty');
+    const initialCostEl = document.getElementById('pr-initial-cost');
     form.stock_quantity = parseFloat(initialQtyEl?.value)||0;
+    form.initial_cost_total = parseFloat(initialCostEl?.value)||0;
   }
   saveProduct(form);
   state.pendingBarcode = '';
@@ -2409,14 +2550,25 @@ function renderDashboard(){
     </div>` : ''}
 
     <div class="card" style="margin-bottom:14px;">
-      <p style="font-weight:700;font-size:14px;margin-bottom:12px;">تقرير نهاية اليوم (إغلاق الصندوق)</p>
-      <div class="between" style="margin-bottom:8px;"><span class="muted" style="font-size:13px;">إجمالي مبيعات اليوم</span><span style="font-weight:700;">${money(d.todaySales)} ر.س</span></div>
-      <div class="between" style="margin-bottom:12px;"><span class="muted" style="font-size:13px;">عدد فواتير اليوم</span><span style="font-weight:700;">${d.todayCount}</span></div>
-      <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:14px;">
-        <div class="between" style="font-size:13px;padding:4px 0;"><span>نقدي</span><span>${money(d.byPayment.cash||0)}</span></div>
-        <div class="between" style="font-size:13px;padding:4px 0;"><span>شبكة</span><span>${money(d.byPayment.card||0)}</span></div>
-        <div class="between" style="font-size:13px;padding:4px 0;"><span>تحويل</span><span>${money(d.byPayment.transfer||0)}</span></div>
-      </div>
+      ${state.dashRange==='today' ? `
+        <p style="font-weight:700;font-size:14px;margin-bottom:12px;">تقرير نهاية اليوم (إغلاق الصندوق)</p>
+        <div class="between" style="margin-bottom:8px;"><span class="muted" style="font-size:13px;">إجمالي مبيعات اليوم</span><span style="font-weight:700;">${money(d.todaySales)} ر.س</span></div>
+        <div class="between" style="margin-bottom:12px;"><span class="muted" style="font-size:13px;">عدد فواتير اليوم</span><span style="font-weight:700;">${d.todayCount}</span></div>
+        <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:14px;">
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>نقدي</span><span>${money(d.byPayment.cash||0)}</span></div>
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>شبكة</span><span>${money(d.byPayment.card||0)}</span></div>
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>تحويل</span><span>${money(d.byPayment.transfer||0)}</span></div>
+        </div>
+      ` : `
+        <p style="font-weight:700;font-size:14px;margin-bottom:12px;">تقرير ${state.dashRange==='week'?'الأسبوع':state.dashRange==='month'?'الشهر':'الفترة المحددة'} (${fmtDate(from)} - ${fmtDate(to)})</p>
+        <div class="between" style="margin-bottom:8px;"><span class="muted" style="font-size:13px;">إجمالي المبيعات</span><span style="font-weight:700;">${money(d.totalSales)} ر.س</span></div>
+        <div class="between" style="margin-bottom:12px;"><span class="muted" style="font-size:13px;">عدد الفواتير</span><span style="font-weight:700;">${d.countInRange}</span></div>
+        <div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:14px;">
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>نقدي</span><span>${money(d.byPaymentRange.cash||0)}</span></div>
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>شبكة</span><span>${money(d.byPaymentRange.card||0)}</span></div>
+          <div class="between" style="font-size:13px;padding:4px 0;"><span>تحويل</span><span>${money(d.byPaymentRange.transfer||0)}</span></div>
+        </div>
+      `}
       <button class="btn btn-outline btn-block" onclick="printDailyBrief()">${ICONS.print} طباعة الملخص</button>
     </div>
   </div>`;
@@ -2457,25 +2609,31 @@ function printStockHistory(){
   setTimeout(()=>waitForImagesThenPrint(area), 50);
 }
 
-function printDailyBrief(){
+function printDailyBrief(forceToday){
   const d = computeDashboard();
+  const {from, to} = dashDateRange();
   const c = state.company;
+  const isToday = forceToday || state.dashRange==='today';
+  const title = isToday ? 'تقرير نهاية اليوم' : `تقرير ${state.dashRange==='week'?'الأسبوع':state.dashRange==='month'?'الشهر':'الفترة المحددة'}`;
+  const salesVal = isToday ? d.todaySales : d.totalSales;
+  const countVal = isToday ? d.todayCount : d.countInRange;
+  const payment = isToday ? d.byPayment : d.byPaymentRange;
   const area = document.getElementById('print-area');
   area.className = '';
   area.innerHTML = `
     <div dir="rtl" style="font-family:'Tajawal',sans-serif;padding:14px;">
       <div style="text-align:center;margin-bottom:12px;">
         <div style="font-weight:700;font-size:15px;">${c?.name||''}</div>
-        <div style="font-size:12px;color:#6B7280;">تقرير نهاية اليوم</div>
-        <div style="font-size:11px;color:#6B7280;">${new Date().toLocaleDateString('ar-SA')}</div>
+        <div style="font-size:12px;color:#6B7280;">${title}</div>
+        <div style="font-size:11px;color:#6B7280;">${isToday ? new Date().toLocaleDateString('ar-SA') : `${fmtDate(from)} - ${fmtDate(to)}`}</div>
       </div>
       <div style="border-top:1px dashed #999;border-bottom:1px dashed #999;padding:8px 0;margin-bottom:8px;">
-        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>إجمالي مبيعات اليوم</span><span>${money(d.todaySales)} ر.س</span></div>
-        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>عدد الفواتير</span><span>${d.todayCount}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>إجمالي المبيعات</span><span>${money(salesVal)} ر.س</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>عدد الفواتير</span><span>${countVal}</span></div>
       </div>
-      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>نقدي</span><span>${money(d.byPayment.cash||0)} ر.س</span></div>
-      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>شبكة</span><span>${money(d.byPayment.card||0)} ر.س</span></div>
-      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>تحويل</span><span>${money(d.byPayment.transfer||0)} ر.س</span></div>
+      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>نقدي</span><span>${money(payment.cash||0)} ر.س</span></div>
+      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>شبكة</span><span>${money(payment.card||0)} ر.س</span></div>
+      <div style="display:flex;justify-content:space-between;padding:4px 0;"><span>تحويل</span><span>${money(payment.transfer||0)} ر.س</span></div>
     </div>`;
   setTimeout(()=>window.print(), 150);
 }
@@ -2556,7 +2714,8 @@ function renderSettingsSheet(){
       <div class="modal-title"><span>الإعدادات</span><button onclick="state.settingsSheetOpen=false;render()">${ICONS.x}</button></div>
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.settingsSheetOpen=false;state.contactDraft=[];state.view='setup_company';render()">${ICONS.settings} بيانات المنشأة</button>
       <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.settingsSheetOpen=false;state.view='category_management';render()">${ICONS.list} إدارة الفئات</button>
-      <button class="btn btn-outline btn-block" style="justify-content:flex-start;" onclick="state.settingsSheetOpen=false;state.view='staff_management';render()">${ICONS.user} إدارة الموظفين</button>
+      <button class="btn btn-outline btn-block" style="margin-bottom:10px;justify-content:flex-start;" onclick="state.settingsSheetOpen=false;state.view='staff_management';render()">${ICONS.user} إدارة الموظفين</button>
+      <button class="btn btn-outline btn-block" style="justify-content:flex-start;" onclick="exportBackup()">${ICONS.box} تصدير نسخة احتياطية</button>
     </div>
   </div>`;
 }
