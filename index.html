@@ -131,7 +131,7 @@ const state = {
   authError: "",
   authLoading: false,
   forgotMode: false,
-  checkout: { customerId: "", payment: "cash", discount: 0, discountType: "fixed", status: "paid", quickName: "", quickWa: "", manDesc: "", manPrice: "" },
+  checkout: { customerId: "", payment: "cash", discount: 0, discountType: "fixed", status: "paid", quickName: "", quickWa: "", manDesc: "", manPrice: "", amountReceived: "", splitCash: "", splitCard: "", splitTransfer: "" },
   checkoutLoading: false,
   editItem: null,
   lastInvoice: null,
@@ -169,8 +169,36 @@ function money(n){
 }
 function fmtDate(d){ return new Date(d).toLocaleDateString('ar-SA'); }
 function isoDay(d){ return new Date(d).toISOString().slice(0,10); }
-function payLabel(m){ return m==='cash'?'نقدي':m==='card'?'شبكة':m==='transfer'?'تحويل':m; }
-function statusLabel(s){ return s==='paid'?'مدفوعة':s==='unpaid'?'غير مدفوعة':'ملغاة'; }
+function payLabel(m){ return m==='cash'?'نقدي':m==='card'?'شبكة':m==='transfer'?'تحويل':m==='split'?'دفع مقسم':m; }
+function statusLabel(s){ return s==='paid'?'مدفوعة':s==='partial'?'مدفوعة جزئياً':s==='unpaid'?'غير مدفوعة':'ملغاة'; }
+function computePaymentInfo(total){
+  const method = state.checkout.payment;
+  if(method === 'cash'){
+    const receivedRaw = state.checkout.amountReceived;
+    if(receivedRaw === '' || receivedRaw === null || receivedRaw === undefined){
+      return { paid: total, remaining: 0, change: 0, status: 'paid', cash_amount: total, card_amount: 0, transfer_amount: 0, amount_received: null, change_given: null };
+    }
+    const received = parseFloat(receivedRaw) || 0;
+    const paid = Math.min(received, total);
+    const remaining = Math.max(0, total - received);
+    const change = Math.max(0, received - total);
+    return { paid, remaining, change, status: remaining>0 ? 'partial' : 'paid', cash_amount: paid, card_amount: 0, transfer_amount: 0, amount_received: received, change_given: change };
+  }
+  if(method === 'split'){
+    const c = parseFloat(state.checkout.splitCash) || 0;
+    const k = parseFloat(state.checkout.splitCard) || 0;
+    const t = parseFloat(state.checkout.splitTransfer) || 0;
+    const sum = c + k + t;
+    const paid = Math.min(sum, total);
+    const remaining = Math.max(0, total - sum);
+    return { paid, remaining, change: 0, status: remaining>0 ? 'partial' : 'paid', cash_amount: c, card_amount: k, transfer_amount: t, amount_received: null, change_given: null };
+  }
+  // card or transfer: يستخدم مفتاح الحالة اليدوي (مدفوعة/غير مدفوعة) الموجود أصلاً
+  const status = state.checkout.status;
+  const paid = status === 'paid' ? total : 0;
+  const remaining = total - paid;
+  return { paid, remaining, change: 0, status, cash_amount: 0, card_amount: method==='card'?paid:0, transfer_amount: method==='transfer'?paid:0, amount_received: null, change_given: null };
+}
 
 /* ============ الأيقونات ============ */
 const ICONS = {
@@ -588,6 +616,13 @@ function offlineQueueToInvoiceShape(rec){
     total: rec.invoicePayload.total,
     status: rec.invoicePayload.status,
     payment_method: rec.invoicePayload.payment_method,
+    paid_amount: rec.invoicePayload.paid_amount,
+    remaining_amount: rec.invoicePayload.remaining_amount,
+    amount_received: rec.invoicePayload.amount_received,
+    change_given: rec.invoicePayload.change_given,
+    cash_amount: rec.invoicePayload.cash_amount,
+    card_amount: rec.invoicePayload.card_amount,
+    transfer_amount: rec.invoicePayload.transfer_amount,
     items: rec.items,
     customer: customer || null,
     _offlinePending: true
@@ -642,6 +677,7 @@ async function confirmInvoice(){
   const discount = computeDiscountAmount(subtotal);
   const total = Math.max(0, Math.round((subtotal - discount)*100)/100);
   const tax = 0;
+  const payInfo = computePaymentInfo(total);
   const items = state.cart.map(i=>({
     product_id: i.product_id, description: i.description,
     quantity: i.quantity, unit_price: i.unit_price, line_total: i.line_total
@@ -649,7 +685,7 @@ async function confirmInvoice(){
 
   function resetCheckoutState(){
     state.cart = [];
-    state.checkout = { customerId:"", payment:"cash", discount:0, discountType:"fixed", status:"paid", quickName:"", quickWa:"", manDesc:"", manPrice:"" };
+    state.checkout = { customerId:"", payment:"cash", discount:0, discountType:"fixed", status:"paid", quickName:"", quickWa:"", manDesc:"", manPrice:"", amountReceived:"", splitCash:"", splitCard:"", splitTransfer:"" };
     state.customerSearchQuery = "";
     state.modal = null;
     state.viewingHistorical = false;
@@ -657,7 +693,13 @@ async function confirmInvoice(){
     state.view = "invoice_view";
   }
   function goOffline(customerId, customerLocalData, message){
-    const invoicePayload = { customer_id: customerId||null, subtotal, discount, tax, total, status: state.checkout.status, payment_method: state.checkout.payment };
+    const invoicePayload = {
+      customer_id: customerId||null, subtotal, discount, tax, total,
+      status: payInfo.status, payment_method: state.checkout.payment,
+      paid_amount: payInfo.paid, remaining_amount: payInfo.remaining,
+      amount_received: payInfo.amount_received, change_given: payInfo.change,
+      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount
+    };
     const rec = saveOfflineInvoice(invoicePayload, items, customerLocalData);
     state.lastInvoice = offlineQueueToInvoiceShape(rec);
     resetCheckoutState();
@@ -710,8 +752,11 @@ async function confirmInvoice(){
       invoice_number: numData,
       customer_id: customerId,
       subtotal, discount, tax, total,
-      status: state.checkout.status,
+      status: payInfo.status,
       payment_method: state.checkout.payment,
+      paid_amount: payInfo.paid, remaining_amount: payInfo.remaining,
+      amount_received: payInfo.amount_received, change_given: payInfo.change,
+      cash_amount: payInfo.cash_amount, card_amount: payInfo.card_amount, transfer_amount: payInfo.transfer_amount
     };
     const { data: inv, error: invErr } = await sb.from('invoices').insert(invoicePayload).select().single();
     if(invErr){
@@ -764,6 +809,8 @@ async function submitEditInvoice(){
   const total = Math.max(0, Math.round((subtotal-discount)*100)/100);
   const tax = 0;
   const payload = { customer_id: e.customer_id||null, discount, tax, total, payment_method: e.payment_method, status: e.status };
+  if(e.status === 'paid'){ payload.paid_amount = total; payload.remaining_amount = 0; }
+  else if(e.status === 'unpaid'){ payload.paid_amount = 0; payload.remaining_amount = total; }
   const { error } = await sb.from('invoices').update(payload).eq('id', e.id);
   if(error){ showToast("خطأ: "+error.message); return; }
   const customer = state.customers.find(c=>c.id===e.customer_id);
@@ -832,6 +879,26 @@ function invoiceReceiptHTML(inv, c){
     <div style="border-top:1px solid #1F2333;margin-top:6px;padding-top:8px;display:flex;justify-content:space-between;font-weight:700;font-size:15px;">
       <span>الإجمالي</span><span>${money(inv.total)} ر.س</span>
     </div>
+
+    ${(() => {
+      const rows = [];
+      if(inv.payment_method === 'split'){
+        if(inv.cash_amount) rows.push(['نقدي', inv.cash_amount]);
+        if(inv.card_amount) rows.push(['شبكة', inv.card_amount]);
+        if(inv.transfer_amount) rows.push(['تحويل', inv.transfer_amount]);
+      }
+      if(inv.amount_received != null){
+        rows.push(['المبلغ المستلم', inv.amount_received]);
+        if(inv.change_given) rows.push(['الباقي للعميل', inv.change_given]);
+      }
+      if(inv.status === 'partial' && inv.remaining_amount){
+        rows.push(['المتبقي (مستحق)', inv.remaining_amount]);
+      }
+      if(rows.length===0) return '';
+      return `<div style="font-size:12px;margin-top:8px;">
+        ${rows.map(([label,val])=>`<div style="display:flex;justify-content:space-between;padding:2px 0;"><span>${label}</span><span>${money(val)}</span></div>`).join('')}
+      </div>`;
+    })()}
 
     <div style="text-align:center;margin:16px 0;">
       <div id="qr-holder-${inv.id}" style="width:72px;height:72px;margin:0 auto;"></div>
@@ -926,8 +993,16 @@ function computeDashboard(){
   const {from, to} = dashDateRange();
   const inRange = state.invoices.filter(i=>{ const d=isoDay(i.created_at); return d>=from && d<=to && i.status!=='cancelled'; });
   const totalSales = inRange.reduce((s,i)=>s+parseFloat(i.total),0);
-  const collected = inRange.filter(i=>i.status==='paid').reduce((s,i)=>s+parseFloat(i.total),0);
-  const receivable = inRange.filter(i=>i.status==='unpaid').reduce((s,i)=>s+parseFloat(i.total),0);
+  const collected = inRange.reduce((s,i)=>{
+    if(i.status==='paid') return s+parseFloat(i.total);
+    if(i.status==='partial') return s+parseFloat(i.paid_amount||0);
+    return s;
+  },0);
+  const receivable = inRange.reduce((s,i)=>{
+    if(i.status==='unpaid') return s+parseFloat(i.total);
+    if(i.status==='partial') return s+parseFloat(i.remaining_amount||0);
+    return s;
+  },0);
 
   const dayList = [];
   let cur = new Date(from);
@@ -938,10 +1013,18 @@ function computeDashboard(){
   const today = isoDay(new Date());
   const todayInvoices = state.invoices.filter(i=>isoDay(i.created_at)===today && i.status!=='cancelled');
   const byPayment = {cash:0, card:0, transfer:0};
-  todayInvoices.forEach(i=>{ byPayment[i.payment_method] = (byPayment[i.payment_method]||0) + parseFloat(i.total); });
+  todayInvoices.forEach(i=>{
+    if(i.payment_method==='split'){
+      byPayment.cash += parseFloat(i.cash_amount||0);
+      byPayment.card += parseFloat(i.card_amount||0);
+      byPayment.transfer += parseFloat(i.transfer_amount||0);
+    } else {
+      byPayment[i.payment_method] = (byPayment[i.payment_method]||0) + parseFloat(i.paid_amount!=null ? i.paid_amount : i.total);
+    }
+  });
 
-  const unpaidAll = state.invoices.filter(i=>i.status==='unpaid');
-  const unpaidTotal = unpaidAll.reduce((s,i)=>s+parseFloat(i.total),0);
+  const unpaidAll = state.invoices.filter(i=>i.status==='unpaid' || i.status==='partial');
+  const unpaidTotal = unpaidAll.reduce((s,i)=>s + (i.status==='partial' ? parseFloat(i.remaining_amount||0) : parseFloat(i.total)),0);
 
   return { totalSales, collected, receivable, countInRange: inRange.length, dayList, dailyTotals, customersCount: state.customers.length,
            todaySales: todayInvoices.reduce((s,i)=>s+parseFloat(i.total),0), todayCount: todayInvoices.length, byPayment,
@@ -1303,20 +1386,41 @@ function renderCheckoutModal(){
       </div>
 
       <label style="margin-bottom:8px;">طريقة الدفع</label>
-      <div class="grid2" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px;">
-        ${['cash','card','transfer'].map(m=>`
+      <div class="grid2" style="margin-bottom:12px;">
+        ${['cash','card','transfer','split'].map(m=>`
           <button class="btn ${state.checkout.payment===m?'btn-primary':'btn-outline'}" style="flex-direction:column;padding:10px 4px;font-size:12px;" onclick="state.checkout.payment='${m}';render()">
-            ${m==='cash'?ICONS.cash:m==='card'?ICONS.card:ICONS.bank}
+            ${m==='cash'?ICONS.cash:m==='card'?ICONS.card:m==='transfer'?ICONS.bank:ICONS.list}
             ${payLabel(m)}
           </button>
         `).join('')}
       </div>
 
+      ${state.checkout.payment==='cash' ? `
+      <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
+        <div class="field" style="margin-bottom:0;">
+          <label>المبلغ المستلم من العميل (اتركه فاضي لو المبلغ مضبوط)</label>
+          <input id="chk-amount-received" type="number" value="${state.checkout.amountReceived}" oninput="state.checkout.amountReceived=this.value;refreshCheckoutTotals();" placeholder="${money(total)}">
+        </div>
+        <div id="cash-feedback" style="margin-top:8px;"></div>
+      </div>` : ''}
+
+      ${state.checkout.payment==='split' ? `
+      <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
+        <p style="font-size:12px;color:var(--text-2);margin-bottom:8px;">وزّع المبلغ على أكثر من طريقة دفع</p>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="split-cash" type="number" placeholder="نقدي" value="${state.checkout.splitCash}" oninput="state.checkout.splitCash=this.value;refreshCheckoutTotals();">
+          <input id="split-card" type="number" placeholder="شبكة" value="${state.checkout.splitCard}" oninput="state.checkout.splitCard=this.value;refreshCheckoutTotals();">
+          <input id="split-transfer" type="number" placeholder="تحويل" value="${state.checkout.splitTransfer}" oninput="state.checkout.splitTransfer=this.value;refreshCheckoutTotals();">
+        </div>
+        <div id="split-feedback"></div>
+      </div>` : ''}
+
+      ${(state.checkout.payment==='card' || state.checkout.payment==='transfer') ? `
       <label style="margin-bottom:8px;">حالة الفاتورة</label>
       <div class="grid2" style="margin-bottom:16px;">
         <button class="btn ${state.checkout.status==='paid'?'btn-primary':'btn-outline'}" onclick="state.checkout.status='paid';render()">مدفوعة</button>
         <button class="btn ${state.checkout.status==='unpaid'?'btn-primary':'btn-outline'}" onclick="state.checkout.status='unpaid';render()">غير مدفوعة</button>
-      </div>
+      </div>` : ''}
 
       <div class="card" style="background:var(--bg);border:none;margin-bottom:16px;">
         <div class="between" style="font-size:13px;color:var(--text-2);margin-bottom:4px;"><span>المجموع الفرعي</span><span id="sum-sub">${money(subtotal)}</span></div>
@@ -1337,6 +1441,31 @@ function refreshCheckoutTotals(){
   document.getElementById('sum-sub').textContent = money(subtotal);
   document.getElementById('sum-disc').textContent = money(discount);
   document.getElementById('sum-total').textContent = money(total)+' ر.س';
+
+  const info = computePaymentInfo(total);
+  const cashFeedback = document.getElementById('cash-feedback');
+  if(cashFeedback){
+    if(state.checkout.amountReceived === '' || state.checkout.amountReceived === null){
+      cashFeedback.innerHTML = '';
+    } else if(info.remaining > 0){
+      cashFeedback.innerHTML = `<div style="font-size:12.5px;color:var(--warn);">المبلغ أقل من الإجمالي — المتبقي (${money(info.remaining)} ر.س) سيُسجّل كمستحق على العميل</div>`;
+    } else {
+      cashFeedback.innerHTML = `<div style="font-size:13px;color:var(--success);font-weight:700;">الباقي للعميل: ${money(info.change)} ر.س</div>`;
+    }
+  }
+  const splitFeedback = document.getElementById('split-feedback');
+  if(splitFeedback){
+    const sum = (parseFloat(state.checkout.splitCash)||0) + (parseFloat(state.checkout.splitCard)||0) + (parseFloat(state.checkout.splitTransfer)||0);
+    if(sum===0){
+      splitFeedback.innerHTML = '';
+    } else if(info.remaining > 0){
+      splitFeedback.innerHTML = `<div style="font-size:12.5px;color:var(--warn);">المبلغ المدخل (${money(sum)}) أقل من الإجمالي — المتبقي (${money(info.remaining)} ر.س) سيُسجّل كمستحق</div>`;
+    } else if(sum > total){
+      splitFeedback.innerHTML = `<div style="font-size:12.5px;color:var(--text-2);">المبلغ المدخل أكبر من الإجمالي بـ ${money(sum-total)} ر.س</div>`;
+    } else {
+      splitFeedback.innerHTML = `<div style="font-size:12.5px;color:var(--success);">تم توزيع الإجمالي بالكامل ✓</div>`;
+    }
+  }
 }
 
 function renderInvoiceView(){
@@ -1345,7 +1474,7 @@ function renderInvoiceView(){
   if(!inv._offlinePending){
     setTimeout(()=>renderQrInto(`qr-holder-${inv.id}`, inv, c, document.getElementById('app')), 0);
   }
-  const statusColors = { paid:['var(--success-bg)','var(--success)'], unpaid:['var(--warn-bg)','var(--warn)'], cancelled:['var(--danger-bg)','var(--danger)'] };
+  const statusColors = { paid:['var(--success-bg)','var(--success)'], partial:['var(--warn-bg)','var(--warn)'], unpaid:['var(--warn-bg)','var(--warn)'], cancelled:['var(--danger-bg)','var(--danger)'] };
   const [sbg, sfg] = statusColors[inv.status] || statusColors.paid;
   return `
   <div class="topbar">
@@ -1805,9 +1934,9 @@ function renderDashboard(){
           <div class="list-row" style="cursor:pointer;" onclick="openInvoice('${inv.id}')">
             <div>
               <div style="font-weight:500;font-size:13px;">${inv.customers?.name || 'بدون عميل'}</div>
-              <div class="muted" style="font-size:11px;">#${inv.invoice_number}</div>
+              <div class="muted" style="font-size:11px;">#${inv.invoice_number} · ${statusLabel(inv.status)}</div>
             </div>
-            <div style="font-weight:700;color:var(--warn);">${money(inv.total)} ر.س</div>
+            <div style="font-weight:700;color:var(--warn);">${money(inv.status==='partial' ? (inv.remaining_amount||0) : inv.total)} ر.س</div>
           </div>
         `).join('')}
         ${d.unpaidCount>8 ? `<p class="muted" style="font-size:11.5px;text-align:center;margin-top:8px;">و${d.unpaidCount-8} فاتورة أخرى غير مدفوعة</p>` : ''}
@@ -2007,6 +2136,7 @@ function render(){
       }
     }
   }
+  if(state.modal==='checkout'){ refreshCheckoutTotals(); }
 }
 
 if('serviceWorker' in navigator){
