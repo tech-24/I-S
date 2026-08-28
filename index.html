@@ -97,9 +97,10 @@ label{font-size:12.5px;color:var(--text-2);display:block;margin-bottom:6px;font-
 .contact-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
 #print-area{display:none;}
 @media print{
+  @page{ margin:0; }
   body *{visibility:hidden;}
   #print-area, #print-area *{visibility:visible;}
-  #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:1mm;font-size:11px;}
+  #print-area{display:block;position:absolute;top:0;left:0;width:100%;padding:3mm;font-size:11px;}
 }
 </style>
 </head>
