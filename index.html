@@ -148,6 +148,7 @@ const state = {
   categories: [],
   duplicateWarning: null,
   posActiveCategory: 'all',
+  productsActiveCategory: 'all',
   viewingProductId: null,
   stockMovements: [],
   restockDraft: { movementType: 'purchase', qty: '', cost: '' },
@@ -463,6 +464,14 @@ async function saveProduct(form){
       user_id: state.user.id, product_id: res.data.id, movement_type: 'purchase',
       previous_quantity: 0, damaged_quantity: 0,
       added_quantity: payload.stock_quantity, added_cost_total: payload.cost_price ? payload.cost_price * payload.stock_quantity : null,
+      new_quantity: payload.stock_quantity
+    });
+  }
+  if(isNew && payload.tracking_type === 'manual' && parseFloat(payload.stock_quantity) > 0){
+    await sb.from('stock_movements').insert({
+      user_id: state.user.id, product_id: res.data.id, movement_type: 'manual_update',
+      previous_quantity: 0, damaged_quantity: 0,
+      added_quantity: payload.stock_quantity, added_cost_total: null,
       new_quantity: payload.stock_quantity
     });
   }
@@ -2124,7 +2133,8 @@ async function submitManualUpdate(){
 }
 
 function renderProductsPage(){
-  const filtered = state.productsSearch ? state.products.filter(p=>p.name.includes(state.productsSearch) || (p.barcode||'').includes(state.productsSearch)) : state.products;
+  const byCategory = state.productsActiveCategory==='all' ? state.products : (state.productsActiveCategory==='none' ? state.products.filter(p=>!p.category_id) : state.products.filter(p=>p.category_id===state.productsActiveCategory));
+  const filtered = state.productsSearch ? byCategory.filter(p=>p.name.includes(state.productsSearch) || (p.barcode||'').includes(state.productsSearch)) : byCategory;
   return `
   <div class="topbar">
     <button onclick="state.view='pos';render()">${ICONS.back}</button>
@@ -2137,21 +2147,33 @@ function renderProductsPage(){
         <input id="products-search-input" placeholder="ابحث بالاسم أو الباركود..." value="${state.productsSearch||''}" oninput="state.productsSearch=this.value;render()" style="padding-left:34px;">
         <span style="position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text-2);">${ICONS.search}</span>
       </div>` : ''}
+    ${state.categories.length>0 && state.products.length>0 ? `
+      <div style="display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;padding-bottom:4px;">
+        <button class="btn btn-sm ${state.productsActiveCategory==='all'?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='all';render()">الكل</button>
+        ${state.categories.map(c=>`<button class="btn btn-sm ${state.productsActiveCategory===c.id?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='${c.id}';render()">${c.name}</button>`).join('')}
+        <button class="btn btn-sm ${state.productsActiveCategory==='none'?'btn-primary':'btn-outline'}" style="white-space:nowrap;" onclick="state.productsActiveCategory='none';render()">بدون فئة</button>
+      </div>` : ''}
     ${state.products.length===0 ? `<div class="empty">${ICONS.box}<p style="margin-top:8px;">لم تتم إضافة أي منتجات بعد</p></div>` : filtered.length===0 ? `<div class="empty"><p>لا يوجد منتج مطابق</p></div>` : `
-    <div class="card">
-      ${filtered.map(p=>`
-        <div class="list-row" style="cursor:pointer;" onclick="openProductDetail('${p.id}')">
-          <div>
-            <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
-            <div class="muted" style="font-size:11.5px;">${money(p.price)} ر.س / ${p.unit||'قطعة'}</div>
-          </div>
-          <div style="display:flex;gap:14px;">
-            <button onclick='event.stopPropagation();state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
-            <button onclick="event.stopPropagation();deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
-          </div>
-        </div>
-      `).join('')}
-    </div>`}
+    ${[['auto','تتبع تلقائي'],['manual','تتبع يدوي'],['none','بدون تتبع']].map(([type,label])=>{
+      const group = filtered.filter(p=>(p.tracking_type||'none')===type);
+      if(group.length===0) return '';
+      return `
+        <div class="day-header">${label} (${group.length})</div>
+        <div class="card" style="margin-bottom:14px;">
+          ${group.map(p=>`
+            <div class="list-row" style="cursor:pointer;" onclick="openProductDetail('${p.id}')">
+              <div>
+                <div style="font-weight:500;font-size:13.5px;">${p.name}</div>
+                <div class="muted" style="font-size:11.5px;">${money(p.price)} ر.س / ${p.unit||'قطعة'}</div>
+              </div>
+              <div style="display:flex;gap:14px;">
+                <button onclick='event.stopPropagation();state.editItem=${JSON.stringify(p).replace(/'/g,"&apos;")};openModal("add_product")'>${ICONS.edit}</button>
+                <button onclick="event.stopPropagation();deleteProduct('${p.id}')" style="color:var(--danger);">${ICONS.trash}</button>
+              </div>
+            </div>
+          `).join('')}
+        </div>`;
+    }).join('')}`}
   </div>`;
 }
 
@@ -2172,7 +2194,7 @@ function renderProductModal(){
       <div class="field">
         <label>نوع التتبع</label>
         <div class="grid2" style="grid-template-columns:repeat(3,1fr);">
-          ${[['auto','تلقائي'],['manual','مكوّن (يدوي)'],['none','خدمة']].map(([val,label])=>`
+          ${[['auto','تتبع تلقائي'],['manual','تتبع يدوي'],['none','بدون تتبع']].map(([val,label])=>`
             <button class="btn ${tType===val?'btn-primary':'btn-outline'}" style="font-size:11.5px;padding:9px 4px;" onclick="selectTrackingType('${val}')">${label}</button>
           `).join('')}
         </div>
@@ -2204,6 +2226,15 @@ function renderProductModal(){
           <p class="muted" style="font-size:11px;margin-top:8px;">لتحديث الكمية استخدم "تعبئة مخزون" من صفحة المنتج</p>
         </div>`}
         <div class="field"><label>تنبيه قارب على النفاد (اختياري)</label><input id="pr-threshold" type="number" value="${p.low_stock_threshold||''}" placeholder="مثال: 5"></div>
+      ` : ''}
+
+      ${tType === 'manual' ? `
+        ${isNew ? `
+        <div class="field"><label>الكمية الابتدائية</label><input id="pr-initial-qty" type="number" placeholder="0"></div>` : `
+        <div class="card" style="background:var(--bg);border:none;margin-bottom:14px;">
+          <div class="between" style="font-size:13px;"><span class="muted">الرصيد الحالي</span><span style="font-weight:700;">${p.stock_quantity ?? 0}</span></div>
+          <p class="muted" style="font-size:11px;margin-top:8px;">لتحديث الرصيد استخدم "تحديث الرصيد" من صفحة المنتج</p>
+        </div>`}
       ` : ''}
 
       <div class="field">
@@ -2263,6 +2294,10 @@ function submitProductForm(force){
       form.stock_quantity = qty;
       form.cost_price = qty>0 ? Math.round((totalCost/qty)*100)/100 : 0;
     }
+  }
+  if(tType==='manual' && !state.editItem){
+    const initialQtyEl = document.getElementById('pr-initial-qty');
+    form.stock_quantity = parseFloat(initialQtyEl?.value)||0;
   }
   saveProduct(form);
   state.pendingBarcode = '';
