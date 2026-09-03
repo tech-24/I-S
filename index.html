@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-title" content="نظام الفوترة">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#4F46E5">
+<link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
@@ -150,10 +151,12 @@ const state = {
   duplicateWarning: null,
   deleteProductWarning: null,
   showArchivedProducts: false,
+  productSaving: false,
   posActiveCategory: 'all',
   productsActiveCategory: 'all',
   viewingProductId: null,
   stockMovements: [],
+  loadingStockHistory: false,
   restockDraft: { qty: '', cost: '' },
   manualUpdateDraft: { remaining: '', damaged: '0', newQty: '', newCost: '' },
   allStockMovements: [],
@@ -447,11 +450,35 @@ function addContactRow(){ state.contactDraft.push({type:'whatsapp', value:''}); 
 function removeContactRow(idx){ state.contactDraft.splice(idx,1); render(); }
 function updateContactRow(idx, field, val){ state.contactDraft[idx][field] = val; }
 
+function compressImage(file, maxDim){
+  return new Promise((resolve)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      img.onload = () => {
+        let { width, height } = img;
+        if(width > maxDim || height > maxDim){
+          if(width > height){ height = Math.round(height * (maxDim/width)); width = maxDim; }
+          else { width = Math.round(width * (maxDim/height)); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        canvas.toBlob((blob)=>{ resolve(blob || file); }, 'image/png');
+      };
+      img.onerror = () => resolve(file);
+      img.src = e.target.result;
+    };
+    reader.onerror = () => resolve(file);
+    reader.readAsDataURL(file);
+  });
+}
 async function saveCompany(form, logoFile){
   let logo_url = state.company?.logo_url || null;
   if(logoFile){
+    const compressed = await compressImage(logoFile, 400);
     const path = `${state.user.id}/logo.png`;
-    const { error: upErr } = await sb.storage.from('logos').upload(path, logoFile, { upsert:true, contentType: logoFile.type });
+    const { error: upErr } = await sb.storage.from('logos').upload(path, compressed, { upsert:true, contentType: 'image/png' });
     if(!upErr){
       const { data } = sb.storage.from('logos').getPublicUrl(path);
       logo_url = data.publicUrl + "?t=" + Date.now();
@@ -499,42 +526,46 @@ async function deleteCustomer(id){
 
 /* ============ منتجات ============ */
 async function saveProduct(form){
-  const { initial_cost_total, ...formForDb } = form;
-  if(!state.editItem && form.tracking_type === 'manual'){
-    formForDb.cost_price = initial_cost_total || 0;
+  try{
+    const { initial_cost_total, initial_purchase_total, ...formForDb } = form;
+    if(!state.editItem && form.tracking_type === 'manual'){
+      formForDb.cost_price = initial_cost_total || 0;
+    }
+    const payload = { ...formForDb, price: parseFloat(form.price)||0, user_id: state.user.id };
+    let res;
+    const isNew = !state.editItem;
+    if(state.editItem){
+      res = await sb.from('products').update(payload).eq('id', state.editItem.id).select().single();
+    } else {
+      res = await sb.from('products').insert(payload).select().single();
+    }
+    if(res.error){ showToast("خطأ: " + res.error.message); return; }
+    if(isNew && payload.tracking_type === 'auto' && parseFloat(payload.stock_quantity) > 0){
+      const { data: mv } = await sb.from('stock_movements').insert({
+        user_id: state.user.id, product_id: res.data.id, movement_type: 'purchase',
+        previous_quantity: 0, damaged_quantity: 0,
+        added_quantity: payload.stock_quantity, added_cost_total: initial_purchase_total || null,
+        new_quantity: payload.stock_quantity
+      }).select().single();
+      if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
+    }
+    if(isNew && payload.tracking_type === 'manual' && parseFloat(payload.stock_quantity) > 0){
+      const { data: mv } = await sb.from('stock_movements').insert({
+        user_id: state.user.id, product_id: res.data.id, movement_type: 'manual_update',
+        previous_quantity: 0, damaged_quantity: 0,
+        added_quantity: payload.stock_quantity, added_cost_total: initial_cost_total || null,
+        new_quantity: payload.stock_quantity
+      }).select().single();
+      if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
+    }
+    if(state.editItem) state.products = state.products.map(p=>p.id===res.data.id?res.data:p);
+    else state.products = [res.data, ...state.products];
+    state.modal = null; state.editItem = null; state.pendingBarcode = ''; state.duplicateWarning = null;
+    showToast("تم حفظ بيانات المنتج بنجاح");
+  } finally {
+    state.productSaving = false;
+    render();
   }
-  const payload = { ...formForDb, price: parseFloat(form.price)||0, user_id: state.user.id };
-  let res;
-  const isNew = !state.editItem;
-  if(state.editItem){
-    res = await sb.from('products').update(payload).eq('id', state.editItem.id).select().single();
-  } else {
-    res = await sb.from('products').insert(payload).select().single();
-  }
-  if(res.error){ showToast("خطأ: " + res.error.message); return; }
-  if(isNew && payload.tracking_type === 'auto' && parseFloat(payload.stock_quantity) > 0){
-    const { data: mv } = await sb.from('stock_movements').insert({
-      user_id: state.user.id, product_id: res.data.id, movement_type: 'purchase',
-      previous_quantity: 0, damaged_quantity: 0,
-      added_quantity: payload.stock_quantity, added_cost_total: payload.cost_price ? payload.cost_price * payload.stock_quantity : null,
-      new_quantity: payload.stock_quantity
-    }).select().single();
-    if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
-  }
-  if(isNew && payload.tracking_type === 'manual' && parseFloat(payload.stock_quantity) > 0){
-    const { data: mv } = await sb.from('stock_movements').insert({
-      user_id: state.user.id, product_id: res.data.id, movement_type: 'manual_update',
-      previous_quantity: 0, damaged_quantity: 0,
-      added_quantity: payload.stock_quantity, added_cost_total: initial_cost_total || null,
-      new_quantity: payload.stock_quantity
-    }).select().single();
-    if(mv) state.allStockMovements = [mv, ...(state.allStockMovements||[])];
-  }
-  if(state.editItem) state.products = state.products.map(p=>p.id===res.data.id?res.data:p);
-  else state.products = [res.data, ...state.products];
-  state.modal = null; state.editItem = null; state.pendingBarcode = ''; state.duplicateWarning = null;
-  showToast("تم حفظ بيانات المنتج بنجاح");
-  render();
 }
 async function archiveProduct(id){
   const { error } = await sb.from('products').update({ is_archived: true }).eq('id', id);
@@ -948,11 +979,14 @@ async function confirmInvoice(){
 }
 
 async function openInvoice(invoiceId){
+  const previousView = state.view;
+  state.view = 'loading';
+  render();
   const { data: inv } = await sb.from('invoices').select('*, customers(*)').eq('id', invoiceId).single();
   const { data: items } = await sb.from('invoice_items').select('*').eq('invoice_id', invoiceId);
   state.lastInvoice = { ...inv, items, customer: inv.customers };
   state.viewingHistorical = true;
-  if(!state.invoiceReturnView) state.invoiceReturnView = state.view;
+  if(!state.invoiceReturnView) state.invoiceReturnView = previousView;
   state.view = "invoice_view";
   render();
 }
@@ -2127,10 +2161,13 @@ function submitCustomerForm(){
 /* ============ تفاصيل المنتج وحركة المخزون ============ */
 async function openProductDetail(productId){
   state.viewingProductId = productId;
+  state.stockMovements = [];
+  state.loadingStockHistory = true;
   state.view = 'product_detail';
   render();
   const { data } = await sb.from('stock_movements').select('*').eq('product_id', productId).order('created_at',{ascending:false});
   state.stockMovements = data || [];
+  state.loadingStockHistory = false;
   render();
 }
 function movementTypeLabel(t){ return t==='purchase'?'استلام بضاعة':t==='production'?'إنتاج':'تحديث يدوي'; }
@@ -2174,7 +2211,7 @@ function renderProductDetail(){
       <p style="font-weight:700;font-size:14px;">سجل الحركة</p>
       ${state.stockMovements.length>0 ? `<button class="btn btn-sm btn-outline" onclick="printStockHistory()">${ICONS.print} طباعة</button>` : ''}
     </div>
-    ${state.stockMovements.length===0 ? `<div class="empty"><p>لا يوجد سجل حركة بعد</p></div>` : `
+    ${state.loadingStockHistory ? `<div class="center" style="padding:20px;"><div class="spinner spinner-dark"></div></div>` : state.stockMovements.length===0 ? `<div class="empty"><p>لا يوجد سجل حركة بعد</p></div>` : `
     <div class="card">
       ${state.stockMovements.map(m=>`
         <div class="list-row">
@@ -2425,11 +2462,12 @@ function renderProductModal(){
         </div>
       </div>
       <div class="field"><label>وصف (اختياري)</label><textarea id="pr-desc" rows="2">${p.description||''}</textarea></div>
-      <button class="btn btn-primary btn-block" onclick="submitProductForm()">حفظ</button>
+      <button class="btn btn-primary btn-block" onclick="submitProductForm()" ${state.productSaving?'disabled':''}>${state.productSaving ? '<div class="spinner"></div>' : 'حفظ'}</button>
     </div>
   </div>`;
 }
 function submitProductForm(force){
+  if(state.productSaving) return;
   const name = document.getElementById('pr-name').value.trim();
   const tType = draftTrackingType || state.editItem?.tracking_type || 'none';
   const priceEl = document.getElementById('pr-price');
@@ -2473,6 +2511,7 @@ function submitProductForm(force){
       const totalCost = parseFloat(costEl?.value)||0;
       form.stock_quantity = qty;
       form.cost_price = qty>0 ? Math.round((totalCost/qty)*100)/100 : 0;
+      form.initial_purchase_total = totalCost;
     }
   }
   if(tType==='manual' && !state.editItem){
@@ -2481,6 +2520,8 @@ function submitProductForm(force){
     form.stock_quantity = parseFloat(initialQtyEl?.value)||0;
     form.initial_cost_total = parseFloat(initialCostEl?.value)||0;
   }
+  state.productSaving = true;
+  render();
   saveProduct(form);
   state.pendingBarcode = '';
   draftTrackingType = null;
